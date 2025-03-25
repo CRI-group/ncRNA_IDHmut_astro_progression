@@ -1,0 +1,84 @@
+---
+title: "GLASS data"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup
+Used packages as well as directories
+
+```{r}
+## libraries for working with the transcripts
+## R version 4.3.1
+library(tximport)
+library(ensembldb)
+library(EnsDb.Hsapiens.v75)
+library(DESeq2)
+library(rtracklayer)
+
+GLASS_ensembl <- EnsDb.Hsapiens.v75
+
+input_dir <- "C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/GLASS data/"
+lncRNA_input_dir <- "C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/microRNA Paper/"
+```
+
+## Reading in the data
+
+```{r}
+## primary cases only contain the first tumor of the case
+## progressed cases without CNV in the lower-grade were excluded
+primary_grade_4_cases <- read.delim(paste0(input_dir, "primary_grade_4_GLASS.txt"),
+                                    sep = "\t")
+progressed_grade_4_cases <- read.delim(paste0(input_dir, "progressed_grade_4_GLASS.txt"),
+                                       sep = "\t")
+```
+
+## processing the transcript-level matrix
+The estimates were done using kallisto and Ensemblv75 reference
+
+From the tximport Vignette:
+Note: if you are using an Ensembl transcriptome, the easiest way to create the tx2gene data.frame is to use the ensembldb packages.
+The annotation packages can be found by version number, and use the pattern EnsDb.Hsapiens.vXX. The transcripts function can be used with return.type="DataFrame", in order to obtain something like the df object constructed in the code chunk above.
+
+```{r}
+## reading in the transcript-level matrix
+GLASS_RNA_seq_tx <- read.delim(paste0(input_dir, "transcript_count_matrix_all_samples.tsv"))
+
+## filtering for the relevant cases
+colnames(GLASS_RNA_seq_tx) <- gsub(".", "-", colnames(GLASS_RNA_seq_tx), fixed = TRUE)
+## remove the last characters to get the short barcode
+RNA_samples <- substr(colnames(GLASS_RNA_seq_tx), 1, nchar(colnames(GLASS_RNA_seq_tx)) - 15)
+
+progressed_with_RNA <- GLASS_RNA_seq_tx[, which(RNA_samples %in% progressed_grade_4_cases[, 3])]
+## sort according to the case
+new_order <- sort(colnames(progressed_with_RNA))
+progressed_with_RNA <- progressed_with_RNA[, new_order]
+## add the gene names back there
+progressed_with_RNA <- cbind(GLASS_RNA_seq_tx[, 1], progressed_with_RNA)
+## remove the cases for which we do not have matching RNA-seq measurements
+RNA_samples_new <- substr(colnames(progressed_with_RNA), 1, nchar(colnames(progressed_with_RNA)) - 15)
+cases_to_be_removed <- c("GLSS-MD-0010-R3", "GLSS-MD-0043-R1")
+progressed_with_RNA <- progressed_with_RNA[, -which(RNA_samples_new %in% cases_to_be_removed)]
+
+## creating the annotation data.frame
+tx_to_gene_anno <- transcripts(GLASS_ensembl, return.type = "data.frame")
+
+## only tx_id and gene_id are needed
+tx_2_gene <- tx_to_gene_anno[, c(1, 7)]
+## summing up the transcripts
+colnames(progressed_with_RNA)[1] <- "transcript"
+counts_with_gene <- merge(tx_2_gene, progressed_with_RNA,
+                          by.x = "tx_id", by.y = "transcript")
+gene_counts <- aggregate(counts_with_gene[, -c(1, 2)],
+                          by = list(gene_id = counts_with_gene$gene_id),
+                          FUN = sum)
+rownames(gene_counts) <- gene_counts[, 1]
+gene_counts <- gene_counts[, -(1)]
+
+## export for RStudio to make sure the DESeq2 version matches
+write.table(gene_counts, file = paste0(input_dir, "GLASS_transcripts_summed_up.txt"),
+            quote = FALSE)
+```
