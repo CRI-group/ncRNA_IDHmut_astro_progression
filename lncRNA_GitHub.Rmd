@@ -1,0 +1,1168 @@
+---
+title: "lncRNAs_GitHub"
+author: "Anja Hartewig"
+date: "2023-05-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## setting up the environment
+```{r}
+library(rtracklayer)
+library(DESeq2)
+library(amap)
+library(gplots)
+library(RColorBrewer)
+library(pheatmap)
+library(ComplexHeatmap)
+library(openxlsx)
+library(dplyr)
+library(circlize)
+library(org.Hs.eg.db)
+library(rstatix)
+library(ggplot2)
+library(gridExtra)
+library(ggpubr) # for adding the stat_pvalue_manual
+
+input_dir <- "C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/RNA-seq/"
+output_dir <- "C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/microRNA Paper/"
+miRNA_input <- "C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/microRNAs/"
+
+writeLines(capture.output(sessionInfo()), paste0(output_dir, "lncRNAs_sessionInfo.txt"))
+```
+
+## extracting the lncRNAs from the DESeq2 data 
+```{r}
+RNA_results <- read.delim(paste0(input_dir, "astro_DESeq2_padj_included.CSV"),
+                          header = TRUE, sep = ";")
+
+## filter for padj < 0.05 and |LFC| > 1
+RNA_sig_genes <- subset(RNA_results, RNA_results[, 7] < 0.05)
+RNA_sig_genes <- subset(RNA_sig_genes, abs(RNA_sig_genes[, 3]) > 1)
+
+RNA_counts <- read.delim(paste0(input_dir, "RNA_seq_gene_counts.txt"),
+                         header = TRUE, sep = "\t")
+```
+
+## count the amount of lncRNAs based on the gencode annotation
+Download from https://www.gencodegenes.org/human/release_30.html (Utilizing release 30), download of Long non-coding RNA gene annotation file
+```{r}
+# read in the gtf file and extract all gene names from the last field
+all_lncRNAs <- rtracklayer::import("C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/gencode.v30.long_noncoding_RNAs.gtf")
+all_lncRNAs_df <- as.data.frame(all_lncRNAs)
+
+## write to table to export it to R version 3.6.
+write.table(all_lncRNAs_df, file = paste0(input_dir, "GENCODE_v30_lncRNAs.txt"))
+
+## better to put it into a dataframe to not have to convert it from a character to a vector
+lncRNA_names <- as.data.frame(unique(all_lncRNAs_df[, c("gene_name", "gene_id")]))
+
+## extracting all lncRNAs that are in the DESEq2 object
+all_lncRNAs_DESeq2 <- RNA_results[(RNA_results[, 1] %in% lncRNA_names[, 1]), ]
+all_lncRNAs_counts <- RNA_counts[(RNA_counts[, 1] %in% lncRNA_names[, 1]), ]
+
+## export them to include in one of the other notebooks
+write.table(all_lncRNAs_DESeq2, file = paste0(output_dir, "all_lncRNAs_DESeq2.txt"),
+            sep = "\t", quote = FALSE)
+
+## check how many of them in total are significant
+sig_lncRNAs <- all_lncRNAs_DESeq2[which(all_lncRNAs_DESeq2[, 7] < 0.05), ]
+sig_lncRNAs <- sig_lncRNAs[which(abs(sig_lncRNAs$log2FoldChange) > 1), ]
+
+sig_lncRNAs_q_01 <- all_lncRNAs_DESeq2[which(all_lncRNAs_DESeq2[, 7] < 0.1), ]
+sig_lncRNAs_q_01 <- sig_lncRNAs_q_01[which(abs(sig_lncRNAs_q_01$log2FoldChange) > 1), ]
+
+write.table(sig_lncRNAs, file = paste0(output_dir, "all_significant_lncRNAs_new.txt"),
+            sep = "\t", row.names = FALSE, quote = FALSE)
+
+write.table(sig_lncRNAs_q_01, file = paste0(output_dir, "all_significant_lncRNAs_q_01.txt"),
+            sep = "\t", row.names = FALSE, quote = FALSE)
+
+# calculate the case-wise LFC for these lncRNAs
+sig_lncRNAs_counts <- as.matrix(all_lncRNAs_counts[all_lncRNAs_counts[, 1] %in% sig_lncRNAs[, 1], 1:13])
+rownames(sig_lncRNAs_counts) <- sig_lncRNAs_counts[, 1]
+sig_lncRNAs_counts <- sig_lncRNAs_counts[, -(1)]
+
+sig_lncRNAs_counts_0.01 <- as.matrix(all_lncRNAs_counts[all_lncRNAs_counts[, 1] %in% sig_lncRNAs_q_01[, 1], 1:13])
+rownames(sig_lncRNAs_counts_0.01) <- sig_lncRNAs_counts_0.01[, 1]
+sig_lncRNAs_counts_0.01 <- as.matrix(sig_lncRNAs_counts_0.01[, -(1)])
+
+## write the normalized counts to a file
+write.table(sig_lncRNAs_counts_0.01, file = paste0(output_dir, "norm_counts_all_significant_lncRNAs_q_01.txt"),
+            sep = "\t", row.names = TRUE, quote = FALSE)
+
+## heatmap was produced in "RNA_seq_analysis-WKS-100205-LT.Rmd"
+```
+
+## looking at the correlation between the predicted targets of the lncRNAs 
+The targets were downloaded 05.05.23 from http://ncpath.pianlab.cn/#/Home (NcPath)
+Additional targets were downloaded from LncTarD (https://lnctard.bio-database.com/) on 25.05.23
+```{r}
+# reading in all the targets
+path_NcPath <- "C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/lncRNAs/NcPath_targets/"
+path_LncTarD <- "C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/lncRNAs/LncTarD_targets/"
+
+filenames_NcPath <- list.files(path_NcPath,
+                               pattern = "*.xlsx", full.names = TRUE)
+
+filenames_LncTarD <- list.files(path_LncTarD,
+                                pattern = "*.txt", full.names = TRUE)
+
+all_lncRNA_targets_NcPath <- lapply(filenames_NcPath, read.xlsx)
+all_lncRNA_targets_LncTarD <- lapply(filenames_LncTarD, read.delim, sep = ",")
+
+# obtaining the sample names from the filenames
+lncRNA_names <- sub("^.+/", "", filenames_NcPath)
+lncRNA_names <- substr(lncRNA_names, 1, nchar(lncRNA_names) - 5)
+names(all_lncRNA_targets_NcPath) <- lncRNA_names
+# Note: filenames for LncTarD files are different from NcPath
+lncRNA_names <- sub("^.+/", "", filenames_LncTarD)
+lncRNA_names <- substr(lncRNA_names, 1, nchar(lncRNA_names) - 4)
+names(all_lncRNA_targets_LncTarD) <- lncRNA_names
+
+# extract unique targets
+# make a table with lncRNA + target to calculate correlations
+# the name appearing more than once in the list means it only has one prediction
+all_lncRNA_targets_NcPath_filtered <- list()
+for (i in 1:length(all_lncRNA_targets_NcPath)){
+  all_lncRNA_targets_NcPath_filtered[[i]] <- all_lncRNA_targets_NcPath[[i]] %>% distinct(TargetGene, .keep_all = TRUE)
+}
+
+# repeat for LncTarD targets
+all_lncRNA_targets_LncTarD_filtered <- list()
+for (i in 1:length(all_lncRNA_targets_LncTarD)){
+  all_lncRNA_targets_LncTarD_filtered[[i]] <- all_lncRNA_targets_LncTarD[[i]] %>% distinct(Target, .keep_all = TRUE)
+}
+
+## extracting the TargetGene and LncRNA columns from each dataframe
+LncRNA_target_df <- as.data.frame(matrix(ncol = 2, nrow = 1))
+colnames(LncRNA_target_df) <- c("LncRNA", "TargetGene")
+for (i in 1:length(all_lncRNA_targets_NcPath_filtered)) {
+  temp_df <- c()
+  temp_LncRNA <- all_lncRNA_targets_NcPath_filtered[[i]]$LncRNA
+  temp_TargetGene <- all_lncRNA_targets_NcPath_filtered[[i]]$TargetGene
+  temp_df <- cbind(temp_LncRNA, temp_TargetGene)
+  colnames(temp_df) <- c("LncRNA", "TargetGene")
+  LncRNA_target_df <- rbind(LncRNA_target_df, temp_df)
+}
+# remove the first row with NA in them
+LncRNA_target_df <- LncRNA_target_df[-(1), ]
+
+## repeat for LncTarD targets
+LncRNA_target_df_2 <- as.data.frame(matrix(ncol = 2, nrow = 1))
+colnames(LncRNA_target_df_2) <- c("Regulator", "Target")
+for (i in 1:length(all_lncRNA_targets_LncTarD_filtered)) {
+  temp_df <- c()
+  temp_Regulator <- all_lncRNA_targets_LncTarD_filtered[[i]]$Regulator
+  temp_Target <- all_lncRNA_targets_LncTarD_filtered[[i]]$Target
+  temp_df <- cbind(temp_Regulator, temp_Target)
+  colnames(temp_df) <- c("Regulator", "Target")
+  LncRNA_target_df_2 <- rbind(LncRNA_target_df_2, temp_df)
+}
+# remove the first rows with NA in them
+LncRNA_target_df_2 <- LncRNA_target_df_2[-(1), ]
+
+## combine them into one dataframe and then remove any duplicates
+## adjust the column names for combining
+colnames(LncRNA_target_df_2) <- c("LncRNA", "TargetGene")
+LncRNA_target_df_combined <- rbind(LncRNA_target_df, LncRNA_target_df_2)
+
+## look if there are any duplicates
+LncRNA_target_df_combined <- unique(LncRNA_target_df_combined)
+
+## make one version to substract the correlating targets
+not_correlating_targets <- unique(subset(LncRNA_target_df_combined$TargetGene, !(LncRNA_target_df_combined$TargetGene %in% combined_correlation$target)))
+
+write.table(not_correlating_targets,
+            file = paste0(output_dir, "not_correlating_lncRNA_targets.txt"),
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+## NOTE: it doesn't matter if you remove the genes beforehand, results are the same
+```
+
+## calculating the correlation
+This code is implemented similarly to the miRNA target correlation analysis (target_prediction_miRNA_mRNA.Rmd)
+```{r}
+## get the case-wise normalized RNA counts
+RNA_counts <- read.delim(paste0(input_dir, "norm_counts_RNA-seq.csv"),
+                                    header = TRUE, sep = ";")
+
+RNA_results <- read.delim(paste0(input_dir, "astro_DESeq2_padj_included.CSV"),
+                           header = TRUE, sep = ";")
+
+## make a filtered object for combining with the miRNAs
+RNA_counts_filtered <- RNA_counts[RNA_counts[, 1] %in% RNA_results[, 1], ]
+
+## read in the data for all miRNAs with adj. p-val
+miRNA_results <- read.delim(paste0(miRNA_input, "miRNAs_DESeq2_only_R.csv"),
+                           header = TRUE, sep = ",")
+## remove all those that have #N/A in their adjusted p-val
+miRNA_results_filtered <- miRNA_results[-which(miRNA_results[, 7] == "#N/A"), ]
+
+norm_miRNA_counts <- read.delim(paste0(miRNA_input, "miRNA_normalized_R.csv"),
+                                      header = TRUE, sep = ";")
+norm_miRNA_counts_filtered <- norm_miRNA_counts[norm_miRNA_counts[, 1] %in% miRNA_results_filtered[, 1], ]
+
+# the format of target miRNA is e.g. "miR-124", change the counts accordingly
+norm_miRNA_counts_filtered[, 1] <- substr(norm_miRNA_counts_filtered[, 1], 5, nchar(norm_miRNA_counts_filtered[, 1]))
+miRNA_results_filtered[, 1] <- substr(miRNA_results_filtered[, 1], 5, nchar(miRNA_results_filtered[, 1]))
+
+## make a combined object to run only 1 correlation analysis
+combined_filtered_counts <- rbind(RNA_counts_filtered, norm_miRNA_counts_filtered)
+
+## check if all the targets have an adjusted p-value
+no_expression_data <- setdiff(LncRNA_target_df_combined$TargetGene, combined_filtered_counts[, 1])
+RNA_lncRNA_corr <- LncRNA_target_df_combined[LncRNA_target_df_combined$TargetGene %in% combined_filtered_counts[, 1], ]
+
+## there are genes such as "circPVT1" LncRNA since they are regulating a ncRNA
+## filter them out
+RNA_lncRNA_corr <- RNA_lncRNA_corr[RNA_lncRNA_corr$LncRNA %in% combined_filtered_counts[, 1], ]
+
+## format the counts to have the gene names as rownames
+rownames(combined_filtered_counts) <- combined_filtered_counts[, 1]
+combined_filtered_counts <- combined_filtered_counts[, (-1)]
+
+## calculate the correlation
+correlations <- RNA_lncRNA_corr
+correlations_norm <- matrix(ncol = 3, nrow = dim(RNA_lncRNA_corr)[1])
+for (i in 1:dim(correlations)[1]){
+  correlations_norm[i, 1] <- cor(as.numeric(combined_filtered_counts[correlations[i, 1], ]),
+                                 as.numeric(combined_filtered_counts[correlations[i, 2], ]))
+  correlations_norm[i, 2] <- cor.test(as.numeric(combined_filtered_counts[correlations[i, 1], ]),
+                                      as.numeric(combined_filtered_counts[correlations[i, 2], ]))$p.value
+  correlations_norm[i, 3] <- cor(as.numeric(combined_filtered_counts[correlations[i, 1], ]),
+                                 as.numeric(combined_filtered_counts[correlations[i, 2], ]), method = "spearman")
+}
+
+correlations <- as.data.frame(cbind(correlations, correlations_norm))
+colnames(correlations) <- c("lncRNA", "target", "pearson correlation",
+                            "pearson correlation p-val",
+                            "spearman correlation")
+
+## extract the spearman correlation for the score in the GRNs
+write.table(correlations, file = paste0(output_dir, "all_correlations_unfiltered.txt"),
+            quote = FALSE, row.names = FALSE)
+
+## read the correlations back in
+correlations <- read.table(paste0(output_dir, "all_correlations_unfiltered.txt"),
+                           sep = " ", header = TRUE)
+
+spearman_correlation_scores <- correlations[, c(1:2, 5)]
+write.table(spearman_correlation_scores, file = paste0(output_dir, "spearman_correlations_unfiltered.txt"),
+            quote = FALSE, row.names = FALSE)
+
+## filter for correlating targets
+correlations_filtered <- correlations[which(as.numeric(correlations[, 4]) < 0.05), ]
+## for now include both positive and negative correlating genes
+positive_correlation <- c()
+negative_correlation <- c()
+for (i in 1:dim(correlations_filtered)[1]){
+  positive_correlation[i] <- as.numeric(correlations_filtered[i, 3]) > 0.5 && as.numeric(correlations_filtered[i, 5]) > 0.5
+  negative_correlation[i] <- as.numeric(correlations_filtered[i, 3]) < -0.5 && as.numeric(correlations_filtered[i, 5]) < -0.5
+}
+
+combined_correlation <- rbind(correlations_filtered[positive_correlation, ],
+                              correlations_filtered[negative_correlation, ])
+
+## extract some statistics for the correlating targets
+## HAGLROS is filtered out later on (not relevant)
+RNA_results_corr_targets <- RNA_results[RNA_results[, 1] %in% combined_correlation[, 2], ]
+miRNA_results_corr_targets <- miRNA_results_filtered[miRNA_results_filtered[, 1] %in% combined_correlation[, 2], ]
+colnames(miRNA_results_corr_targets)[1] <- "genes"
+statistics_corr_targets <- rbind(RNA_results_corr_targets, miRNA_results_corr_targets)
+
+## combine with the correlation
+RNA_stat_lncRNA_targets <- as.data.frame(matrix(ncol = 7, nrow = dim(combined_correlation[1])))
+for (i in 1:dim(combined_correlation)[1]) {
+  index <- grep(combined_correlation[i, 2], statistics_corr_targets[, 1])
+  RNA_stat_lncRNA_targets[i, ] <- statistics_corr_targets[index, ]
+}
+colnames(RNA_stat_lncRNA_targets) <- colnames(RNA_results)
+
+combined_correlation <- cbind(combined_correlation, RNA_stat_lncRNA_targets)
+
+## filter for those for which no statistic is available
+combined_correlation <- combined_correlation[which(combined_correlation$target == combined_correlation$genes), ]
+
+## filter for LFC > 0.3
+combined_correlation <- combined_correlation[which(abs(as.numeric(combined_correlation$log2FoldChange)) > 0.3), ]
+
+## write to file
+write.table(combined_correlation, file = paste0(output_dir, "lncRNA_corr_targets.txt"),
+            quote = FALSE, row.names = FALSE, sep = "\t")
+
+## read in
+combined_correlation <- read.delim(paste0(output_dir, "lncRNA_corr_targets.txt"),
+                                   sep = "\t")
+
+## make sure the columns are numeric before filtering
+combined_correlation[, 12] <- as.numeric(combined_correlation[, 12])
+
+# filter for DE genes
+DE_target_genes <- combined_correlation[combined_correlation[, 12] < 0.05, ]
+
+write.table(unique(DE_target_genes),
+            file = paste0(output_dir, "all_correlating_DE_target_genes_lncRNAs_stats.txt"),
+            quote = FALSE, row.names = FALSE, col.names = TRUE)
+
+
+## check how many of those have |LFC| > 1
+DE_target_genes_FC_1 <- DE_target_genes[abs(DE_target_genes[, 8]) > 1, ]
+
+## write the gene names for both of them to a file for enrichr
+write.table(unique(DE_target_genes_FC_1[, 2]),
+            file = paste0(output_dir, "all_correlating_DE_target_genes_lncRNAs_FC_1.txt"),
+            quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+table(DE_target_genes_FC_1[, 2])[table(DE_target_genes_FC_1[, 2]) > 1]
+
+## check again for how many lncRNAs we have correlating targets
+write.table(table(DE_target_genes[, 1]), file = paste0(output_dir, "Nr._correlating_DE_lncRNAs_cohorts.tsv"),
+            quote = FALSE, row.names = FALSE, sep = "\t")
+
+## read in the miRNA targets for intersection
+miRNA_targets <- read.delim(paste0(miRNA_input, "all_correlating_DE_target_genes_miRNAs_FC_1.txt"),
+                            sep = "\t", header = FALSE)
+
+length(intersect(miRNA_targets[, 1], DE_target_genes_FC_1[, 2]))
+
+## export the 10 targets that are commonly regulated
+
+```
+
+## make a heatmap for the 64 DE lncRNA targets
+```{r}
+## DE_target_genes, get the counts for them
+DE_target_gene_counts <- RNA_counts[(RNA_counts[, 1] %in% DE_target_genes[, 2]), ]
+
+## obtain the LFCs as well
+DE_target_LFC <- RNA_results[(RNA_results[, 1] %in% DE_target_genes[, 2]), ]
+## make sure the order is the same
+DE_target_gene_counts_sorted <- DE_target_gene_counts[order(DE_target_gene_counts[, 1]), ]
+DE_target_LFC_sorted <- DE_target_LFC[order(DE_target_LFC[, 1]), ]
+
+sum(DE_target_gene_counts_sorted[, 1] == DE_target_LFC_sorted[, 1])
+
+rownames(DE_target_gene_counts_sorted) <-DE_target_gene_counts_sorted[, 1]
+DE_target_gene_counts_sorted <- DE_target_gene_counts_sorted[, -(1)]
+
+colnames(DE_target_gene_counts_sorted) <- c("TG02a", "TG02b", "TG03a", "TG03b",
+                                     "TG04a", "TG04b", "TG05a", "TG05b",
+                                     "TG01a", "TG01b", "TG06a", "TG06b")
+
+DE_target_gene_counts_sorted_log <- log2((DE_target_gene_counts_sorted + 1))
+
+grade <- as.factor(as.numeric(c(3, 4, 3, 4, 3, 4, 2, 4, 3, 4, 2, 4)))
+
+ha <- HeatmapAnnotation(grade = grade,
+                        col = list(grade = c("2" = "#ffae00b2",
+                                             "3" = "#775c40b2",
+                                             "4" = "#89138dcb")))
+
+heatmap_pal <- colorRamp2(c(-4, 0, 4), c("#3C5488B2", "white", "#E64B35B2"))
+
+## make the rowannotation
+## make a separate data.frame containing the information
+lncRNAs_anno <- unique(DE_target_genes[, 1])
+
+## loop through the lncRNAs
+lncRNA_anno <- as.data.frame(matrix(data = "none", ncol = 12,
+                                    nrow = nrow(DE_target_gene_counts)))
+colnames(lncRNA_anno) <- lncRNAs_anno
+rownames(lncRNA_anno) <- DE_target_gene_counts[, 1]
+for (i in seq_along(lncRNAs_anno)) {
+  lncRNA <- lncRNAs_anno[i]
+  corr_targets <- DE_target_genes[DE_target_genes[, 1] == lncRNA, ]
+  pos_corr_targets <- corr_targets[corr_targets[, 3] > 0, ]
+  neg_corr_targets <- corr_targets[corr_targets[, 3] < 0, ]
+  if (length(pos_corr_targets) > 0) {
+    for (j in seq_along(pos_corr_targets[, 1])) {
+    indices <- which(rownames(lncRNA_anno) == pos_corr_targets[j, 2])
+    lncRNA_anno[indices, i] <- "positive"
+    }
+  }
+  if (length(neg_corr_targets) > 0) {
+    for (j in seq_along(neg_corr_targets[, 1])) {
+    indices <- which(rownames(lncRNA_anno) == neg_corr_targets[j, 2])
+    lncRNA_anno[indices, i] <- "negative"
+    }
+  }
+}
+
+# Define the colors for the annotations as a named vector
+annotation_colors <- c("none" = "white", "positive" = "#dd7b7b", "negative" = "#177a176e")
+LFC_col <- colorRamp2(c(-4, 0, 4), c("#00b7d7", "#d5d3d3", "#f83479"))
+
+# Create the row annotation
+row_annotation <- rowAnnotation(
+  target_of_COLCA1 = anno_simple(lncRNA_anno[, 1], col = annotation_colors),
+  target_of_CYTOR = anno_simple(lncRNA_anno[, 2], col = annotation_colors),
+  target_of_FBXL19_AS1 = anno_simple(lncRNA_anno[, 3], col = annotation_colors),
+  target_of_HAGLR = anno_simple(lncRNA_anno[, 4], col = annotation_colors),
+  target_of_LINC01088 = anno_simple(lncRNA_anno[, 5], col = annotation_colors),
+  target_of_MIR4435_2HG = anno_simple(lncRNA_anno[, 6], col = annotation_colors),
+  target_of_NEAT1 = anno_simple(lncRNA_anno[, 7], col = annotation_colors),
+  target_of_NRG3_AS1 = anno_simple(lncRNA_anno[, 8], col = annotation_colors),
+  target_of_PVT1 = anno_simple(lncRNA_anno[, 9], col = annotation_colors),
+  target_of_RMST = anno_simple(lncRNA_anno[, 10], col = annotation_colors),
+  target_of_WDFY3_AS2 = anno_simple(lncRNA_anno[, 11], col = annotation_colors),
+  target_of_CRNDE = anno_simple(lncRNA_anno[, 12], col = annotation_colors),
+  LFC = anno_simple(DE_target_LFC_sorted[, 3], col = LFC_col)
+)
+
+annotation_legend_1 <- Legend(
+  labels = names(annotation_colors),
+  legend_gp = gpar(fill = annotation_colors),
+  title = "Correlation"
+)
+
+annotation_legend_2 <- Legend(col_fun = LFC_col,
+                              title = "LFC",
+                              at = c(-4, 0, 4),
+                              labels = c("-4", "0", "4"))
+
+DE_target_gene_counts_sorted_log_scaled <- t(scale(t(DE_target_gene_counts_sorted_log)))
+## order them alphabetically
+ordered_indices <- c(9, 1, 3, 5, 7, 11, 10, 2, 4, 6, 8, 12)
+DE_target_gene_counts_sorted_log_scaled <- DE_target_gene_counts_sorted_log_scaled[, ordered_indices]
+
+
+pdf(file = paste0(output_dir, "Heatmap_DE_targets_log2_scaled_pearson.pdf"), width = 12, height = 10)
+ht <- Heatmap(DE_target_gene_counts_sorted_log_scaled, top_annotation = ha,
+        left_annotation = row_annotation,
+        name = "z-score", clustering_distance_rows = "pearson",
+        column_title = "log2 counts of all DE lncRNA targets, scaled",
+        col = heatmap_pal, cluster_columns = FALSE,
+        row_names_gp = gpar(fontsize = 9), cluster_rows = FALSE)
+draw(ht, annotation_legend_side = "right", annotation_legend_list = list(annotation_legend_1, annotation_legend_2))
+dev.off()
+```
+
+## DIANA lncRNA/miRNA interactions
+Interactions were screenshotted on 13.12., for whatever reason the download links aren't working
+
+```{r}
+## lncRNAs
+DIANA_lncRNAs <- c("PVT1", "CRNDE", "HAGLR", "NEAT1", "PVT1", "COLCA1",
+                   "CRNDE", "CYTOR", "DUXAP8", "KCNIP4-IT1", "LINC01088",
+                   "LINC01094", "NEAT1", "PVT1", "RMST", "RNF219-AS1",
+                   "WDFY3-AS2", "NEAT1", "CRNDE", "CYTOR", "DUXAP8",
+                   "FBXL19-AS1", "NEAT1", "PVT1", "FBXL19-AS1", "MIR4435-2HG",
+                   "NEAT1", "PVT1", "KCNIP4-IT1", "NEAT1", "NEAT1", "NEAT1",
+                   "KCNIP4-IT1", "LINC01094", "NEAT1", "PVT1", "WDFY3-AS2",
+                   "HAGLR", "LINC00842", "NEAT1", "PVT1", "NEAT1", "NEAT1",
+                   "NEAT1", "NEAT1", "ARHGEF26-AS1", "CRNDE", "NEAT1", "CRNDE",
+                   "NEAT1", "PVT1")
+
+## miRNA interaction partners
+DIANA_miRNAs <- c("hsa-let-7b-3p", "hsa-miR-130b-3p", "hsa-miR-130b-3p",
+                  "hsa-miR-130b-3p", "hsa-miR-130b-3p", "hsa-miR-15b-5p",
+                  "hsa-miR-15b-5p", "hsa-miR-15b-5p", "hsa-miR-15b-5p",
+                  "hsa-miR-15b-5p", "hsa-miR-15b-5p", "hsa-miR-15b-5p",
+                  "hsa-miR-15b-5p", "hsa-miR-15b-5p", "hsa-miR-15b-5p",
+                  "hsa-miR-15b-5p", "hsa-miR-15b-5p", "hsa-miR-187-3p",
+                  "hsa-miR-18a-5p", "hsa-miR-18a-5p", "hsa-miR-18a-5p",
+                  "hsa-miR-18a-5p", "hsa-miR-18a-5p", "hsa-miR-18a-5p",
+                  "hsa-miR-196b-5p", "hsa-miR-196b-5p", "hsa-miR-196b-5p",
+                  "hsa-miR-196b-5p", "hsa-miR-199a-3p", "hsa-miR-199a-3p",
+                  "hsa-miR-199b-3p", "hsa-miR-199b-3p", "hsa-miR-210-3p",
+                  "hsa-miR-210-3p", "hsa-miR-210-3p", "hsa-miR-210-3p",
+                  "hsa-miR-210-3p", "hsa-miR-301b-3p", "hsa-miR-301b-3p",
+                  "hsa-miR-301b-3p", "hsa-miR-301b-3p", "hsa-miR-342-5p",
+                  "hsa-miR-383-5p", "hsa-miR-505-5p", "hsa-miR-708-3p",
+                  "hsa-miR-708-3p", "hsa-miR-708-3p", "hsa-miR-708-3p",
+                  "hsa-miR-92b-3p", "hsa-miR-92b-3p", "hsa-miR-92b-3p")
+
+DIANA_interactions <- cbind(DIANA_lncRNAs, DIANA_miRNAs)
+
+## make sure all files are read in properly
+RNA_counts <- read.delim(paste0(input_dir, "norm_counts_RNA-seq.csv"),
+                                    header = TRUE, sep = ";")
+
+RNA_results <- read.delim(paste0(input_dir, "astro_DESeq2_padj_included.CSV"),
+                           header = TRUE, sep = ";")
+
+## make a filtered object for combining with the miRNAs
+RNA_counts_filtered <- RNA_counts[RNA_counts[, 1] %in% RNA_results[, 1], ]
+
+## read in the data for all miRNAs with adj. p-val
+miRNA_results <- read.delim(paste0(miRNA_input, "miRNAs_DESeq2_only_R.csv"),
+                           header = TRUE, sep = ",")
+## remove all those that have #N/A in their adjusted p-val
+miRNA_results_filtered <- miRNA_results[-which(miRNA_results[, 7] == "#N/A"), ]
+
+norm_miRNA_counts <- read.delim(paste0(miRNA_input, "miRNA_normalized_R.csv"),
+                                      header = TRUE, sep = ";")
+norm_miRNA_counts_filtered <- norm_miRNA_counts[norm_miRNA_counts[, 1] %in% miRNA_results_filtered[, 1], ]
+
+combined_filtered_counts <- rbind(RNA_counts_filtered, norm_miRNA_counts_filtered)
+
+## make sure the counts are a numeric object
+rownames(combined_filtered_counts) <- combined_filtered_counts[, 1]
+combined_filtered_counts <- combined_filtered_counts[, (-1)]
+
+## calculate the correlation
+correlations <- DIANA_interactions
+correlations_norm <- matrix(ncol = 3, nrow = dim(DIANA_interactions)[1])
+for (i in 1:dim(correlations)[1]){
+  correlations_norm[i, 1] <- cor(as.numeric(combined_filtered_counts[correlations[i, 1], ]),
+                                 as.numeric(combined_filtered_counts[correlations[i, 2], ]))
+  correlations_norm[i, 2] <- cor.test(as.numeric(combined_filtered_counts[correlations[i, 1], ]),
+                                      as.numeric(combined_filtered_counts[correlations[i, 2], ]))$p.value
+  correlations_norm[i, 3] <- cor(as.numeric(combined_filtered_counts[correlations[i, 1], ]),
+                                 as.numeric(combined_filtered_counts[correlations[i, 2], ]), method = "spearman")
+}
+
+## add them to the respective interactions
+DIANA_correlations <- cbind(DIANA_interactions, correlations_norm)
+colnames(DIANA_correlations) <- c("lncRNA", "miRNA", "pearson correlation",
+                            "pearson correlation p-val",
+                            "spearman correlation")
+
+## write to file
+write.table(DIANA_correlations, file = paste0(output_dir, "DIANA_corr_DE_ncRNAs.txt"),
+            quote = FALSE, row.names = FALSE, sep = "\t")
+
+## filter the DIANA_correlations
+DIANA_correlations_filtered <- DIANA_correlations[which(as.numeric(DIANA_correlations[, 4]) < 0.05), ]
+## separate negative correlation, this is especially interesting
+positive_correlation <- c()
+negative_correlation <- c()
+for (i in 1:dim(DIANA_correlations_filtered )[1]){
+  positive_correlation[i] <- as.numeric(DIANA_correlations_filtered [i, 3]) > 0.5 && as.numeric(DIANA_correlations_filtered [i, 5]) > 0.5
+  negative_correlation[i] <- as.numeric(DIANA_correlations_filtered [i, 3]) < -0.5 && as.numeric(DIANA_correlations_filtered [i, 5]) < -0.5
+}
+
+DIANA_neg_corr <- DIANA_correlations_filtered[negative_correlation, ]
+DIANA_pos_corr <- DIANA_correlations_filtered[positive_correlation, ]
+
+## positive correlation is still possible even with Ago2, but not as expected
+```
+
+## calculcate the correlation between let7b and NEAT1
+```{r}
+NEAT1_counts <- RNA_counts[RNA_counts[, 1] == "NEAT1", ]
+rownames(NEAT1_counts) <- NEAT1_counts[, 1]
+NEAT1_counts <- NEAT1_counts[, -(1)]
+let7b_counts <- norm_miRNA_counts[norm_miRNA_counts[, 1] == "hsa-let-7b-3p", ]
+rownames(let7b_counts) <- let7b_counts[, 1]
+let7b_counts <- let7b_counts[, -(1)]
+
+cor(as.numeric(NEAT1_counts[1, ]), as.numeric(let7b_counts[1, ]))
+# cor.test(as.numeric(NEAT1_counts[1, ]), as.numeric(let7b_counts[1, ]))$p.value
+cor(as.numeric(NEAT1_counts[1, ]), as.numeric(let7b_counts[1, ]), method = "spearman")
+## pearson: -0.47 spearman: -0.65 (p-val not significant)
+
+## check for some of the other let7 members
+let7a_counts <- norm_miRNA_counts[norm_miRNA_counts[, 1] == "hsa-let-7a-3p", ]
+rownames(let7a_counts) <- let7a_counts[, 1]
+let7a_counts <- let7a_counts[, -(1)]
+
+cor(as.numeric(NEAT1_counts[1, ]), as.numeric(let7a_counts[1, ]))
+cor(as.numeric(NEAT1_counts[1, ]), as.numeric(let7a_counts[1, ]), method = "spearman")
+## spearman: -0.82, -0.4 for pearson
+
+## 7b 5p -0.44 pearson, -0.47 spearman
+
+## correlation with e.g. let-7c-5p
+
+let7a_counts <- norm_miRNA_counts[norm_miRNA_counts[, 1] == "hsa-let-7d-5p", ]
+rownames(let7a_counts) <- let7a_counts[, 1]
+let7a_counts <- let7a_counts[, -(1)]
+
+cor(as.numeric(NEAT1_counts[1, ]), as.numeric(let7a_counts[1, ]))
+cor(as.numeric(NEAT1_counts[1, ]), as.numeric(let7a_counts[1, ]), method = "spearman")
+## spearman: -0.82, -0.4 for pearson
+```
+
+## make a barplot with the number of correlating targets per lncRNA
+```{r}
+targets_per_lncRNA <- read.table(paste0(output_dir, "Nr._correlating_DE_lncRNAs_cohorts.tsv"),
+                                 sep = "\t", header = TRUE)
+targets_per_lncRNA <- targets_per_lncRNA[order(targets_per_lncRNA[, 2], decreasing = TRUE), ]
+
+targets_per_lncRNA$Var1 <- factor(targets_per_lncRNA$Var1, levels = targets_per_lncRNA$Var1)
+
+pdf(file = paste0(output_dir, "Nr_of_lncRNA_Targets.pdf"))
+ggplot(data = targets_per_lncRNA, aes(x = Var1, y = as.numeric(Freq))) +
+  geom_bar(stat = "identity") +
+  theme_classic() +
+  ylab("Nr of targets") +
+  ggtitle("Nr. of correlating targets per lncRNA") +
+  theme(text = element_text(family = "sans")) +
+  theme(axis.text.x = element_text(angle = 45, size = 10, hjust = 1),
+        axis.title.x = element_blank())
+dev.off()
+
+```
+
+## plot heatmaps for the remaining 17 lncRNAs including their correlating targets
+Code adjusted from the miRNA heatmaps (target_prediction_miRNA_mRNA.Rmd)
+```{r}
+## read in the combined_correlation table
+combined_correlation <- read.delim(paste0(output_dir, "lncRNA_corr_targets.txt"), 
+                                   sep = "\t")
+
+## get the background list for GOrilla
+## taking all the DESEq2 genes and substract the correlating genes
+all_genes <- RNA_results[, 1]
+full_background_list <- subset(all_genes, !(all_genes %in% combined_correlation$target))
+
+write.table(full_background_list,
+            file = paste0(output_dir, "measured_genes_without_correlating_targets.txt"),
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+write.table(combined_correlation$target,
+            file = paste0(output_dir, "correlating_targets_unsorted.txt"),
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+## filter to have only the 17 lnRNAs that have correlating targets
+lncRNAs_with_corr_targets <- num_sig_lncRNAs_counts_0.01[which(rownames(sig_lncRNAs_counts_0.01) %in% combined_correlation$lncRNA), ]
+for (i in 1:17) {
+  targets <- combined_correlation[which(combined_correlation[, 1] == rownames(lncRNAs_with_corr_targets)[i]), ]
+  # first row is lncRNA, remaining rows are targets
+  expression <- as.data.frame(rbind(lncRNAs_with_corr_targets[rownames(lncRNAs_with_corr_targets)[i], ],
+                                    RNA_counts_case_wise[targets[, 2], ]))
+  expression_log <- log2(expression + 1)
+  ## re-order the expression for new numbering
+  colnames(expression_log) <- c("TG02a", "TG02b", "TG03a", "TG03b",
+                                "TG04a", "TG04b", "TG05a", "TG05b",
+                                "TG01a", "TG01b", "TG06a", "TG06b")
+  expression_log <- expression_log[, order(colnames(expression_log))]
+  col_fun <- colorRamp2(c(min(expression_log[1, ]), max(expression_log[1, ])), c("yellow", "darkgreen"))
+  ha <- HeatmapAnnotation(lncRNA_count = anno_simple(as.numeric(expression_log[1, ]), col = col_fun))
+  # create legend manually
+  filename <- paste0(output_dir, rownames(lncRNAs_with_corr_targets)[i], "_Heatmap.pdf", sep = "")
+  col_fun_2 <- colorRamp2(c(0, max(expression_log[2:dim(expression_log)[1], ])), c("blue", "red"))
+  pdf(file = filename)
+  draw(Heatmap(expression_log[2:dim(expression_log)[1], ], name = "mRNA",
+               cluster_columns = FALSE, top_annotation = ha,
+               column_title = paste0("Log2 transformed target expression of ",
+               rownames(lncRNAs_with_corr_targets)[i])))
+  draw(Legend(col_fun = col_fun, title = "lncRNA"),
+              x = unit(1, "npc"), y = unit(1, "npc"),
+              just = c("right", "top"))
+  dev.off()
+}
+```
+
+## look at how many of our DE lncRNAs can be found in TCGA as well
+```{r}
+## read in the TCGA data
+TCGA_DE_mRNAs <- read.delim("C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/microRNA Paper/TCGA comparison/DE_mRNAs_TCGA.txt")
+DE_lncRNAs_TG <- read.delim(file = paste0(output_dir, "all_significant_lncRNAs_q_01.txt"),
+                            sep = "\t")
+## note: this is only the 0.05 cutoff, our lncRNAs are 0.1 cutoff
+test <- TCGA_DE_mRNAs[which(TCGA_DE_mRNAs[, 2] %in% DE_lncRNAs_TG[, 1]), ]
+
+## read in the Gencode to check how many DElncRNAs are there in total
+all_lncRNAs <- rtracklayer::import("C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/gencode.v30.long_noncoding_RNAs.gtf")
+all_lncRNAs_df <- as.data.frame(all_lncRNAs)
+
+DE_lncRNAs_TCGA <- TCGA_DE_mRNAs[which(TCGA_DE_mRNAs[, 2] %in% all_lncRNAs_df[, 12]), ]
+```
+
+### looking at the GO enrichment
+```{r}
+## starting to export all the genes for ConsensusPathDB
+all_lncRNA_targets <- combined_correlation$target
+
+write.table(all_lncRNA_targets, file = paste0(output_dir, "all_lncRNA_targets_GOrilla.txt"),
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+## export the measurements for all targets for ConsensusPathDB
+all_lncRNA_target_measurements <- combined_correlation[, c(6, 8, 12)]
+
+write.table(all_lncRNA_target_measurements, file = paste0(output_dir, "all_lncRNA_targets_ConsensusPathDB.txt"),
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+## I need enrichments for MIR4435-2HG, CYTOR, NEAT1, PVT1, WDFY3-AS2, HAGLR
+
+MIR4435_2HG_targets <- combined_correlation[which(combined_correlation$lncRNA == "MIR4435-2HG"), ]
+CYTOR_targets <- combined_correlation[which(combined_correlation$lncRNA == "CYTOR"), ]
+NEAT1_targets <- combined_correlation[which(combined_correlation$lncRNA == "NEAT1"), ]
+PVT1_targets <- combined_correlation[which(combined_correlation$lncRNA == "PVT1"), ]
+WDFY3_AS2_targets <- combined_correlation[which(combined_correlation$lncRNA == "WDFY3-AS2"), ]
+HAGLR_targets <- combined_correlation[which(combined_correlation$lncRNA == "HAGLR"), ]
+
+## export the measurements with the genes for ConsensusPathDB
+MIR4435_2HG_targets_ConsensusPath <- MIR4435_2HG_targets[, c(6, 8, 12)]
+CYTOR_targets_ConsensusPath <- CYTOR_targets[, c(6, 8, 12)]
+NEAT1_targets_ConsensusPath <- NEAT1_targets[, c(6, 8, 12)]
+PVT1_targets_ConsensusPath <- PVT1_targets[, c(6, 8, 12)]
+WDFY3_AS2_targets_ConsensusPath <- WDFY3_AS2_targets[, c(6, 8, 12)]
+HAGLR_targets_ConsensusPath <- HAGLR_targets[, c(6, 8, 12)]
+
+write.table(MIR4435_2HG_targets_ConsensusPath, file = paste0(output_dir, "MIR4435_2HG_targets_ConsensusPathDB.txt"),
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.table(CYTOR_targets_ConsensusPath, file = paste0(output_dir, "CYTOR_targets_ConsensusPathDB.txt"),
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.table(NEAT1_targets_ConsensusPath, file = paste0(output_dir, "NEAT1_targets_ConsensusPathDB.txt"),
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.table(PVT1_targets_ConsensusPath, file = paste0(output_dir, "PVT1_targets_ConsensusPathDB.txt"),
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.table(WDFY3_AS2_targets_ConsensusPath, file = paste0(output_dir, "WDFY3_AS2_targets_ConsensusPathDB.txt"),
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.table(HAGLR_targets_ConsensusPath, file = paste0(output_dir, "HAGLR_targets_ConsensusPathDB.txt"),
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+# GOrilla needs a list of ranked genes (for 1 gene not a problem, sort by |LFC|)
+MIR4435_2HG_targets_sorted <- MIR4435_2HG_targets[order(abs(MIR4435_2HG_targets$log2FoldChange), decreasing = TRUE), 2]
+CYTOR_targets_sorted <- CYTOR_targets[order(abs(CYTOR_targets$log2FoldChange), decreasing = TRUE), 2]
+NEAT1_targets_sorted <- NEAT1_targets[order(abs(NEAT1_targets$log2FoldChange), decreasing = TRUE), 2]
+PVT1_targets_sorted <- PVT1_targets[order(abs(PVT1_targets$log2FoldChange), decreasing = TRUE), 2]
+WDFY3_AS2_targets_sorted <- WDFY3_AS2_targets[order(abs(WDFY3_AS2_targets$log2FoldChange), decreasing = TRUE), 2]
+HAGLR_targets_sorted <- HAGLR_targets[order(abs(HAGLR_targets$log2FoldChange), decreasing = TRUE), 2]
+
+write.table(MIR4435_2HG_targets_sorted, file = paste0(output_dir, "MIR4435_2HG_targets_GOrilla.txt"),
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.table(CYTOR_targets_sorted, file = paste0(output_dir, "CYTOR_targets_GOrilla.txt"),
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.table(NEAT1_targets_sorted, file = paste0(output_dir, "NEAT1_targets_GOrilla.txt"),
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.table(PVT1_targets_sorted, file = paste0(output_dir, "PVT1_targets_GOrilla.txt"),
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.table(WDFY3_AS2_targets_sorted, file = paste0(output_dir, "WDFY3_AS2_targets_GOrilla.txt"),
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.table(HAGLR_targets_sorted, file = paste0(output_dir, "HAGLR_targets_GOrilla.txt"),
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+## read in the results for potential further filtering
+## ConsensusPathDB
+
+## GOrilla
+## filter based on b (number of input genes associated with the GO term)
+
+## make a background list containing all DESEq2 genes, make a different background list with all the genes that are predicted to be targets (not necessarily correlating)
+## run all the genes with GOrilla and both background lists
+## try to repeat the individiual GOrilla analysis with a background list as well
+## make the dotplots for the correlating targets (see miRNAs)
+```
+
+### TCGA part
+## run the correlation analysis for the lncRNA targets TCGA
+based on the code from miRNA_target_prediction_TCGA.Rmd
+```{r}
+# read in the normalised counts
+
+# filter for the lncRNAs and their targets, potentially split into two tables
+```
+
+## make TCGA violin plots for the 16 interesting lncRNAs 
+based on Serafiinas code
+```{r}
+## read in the TCGA RNA-seq data (object name: normalized_counts)
+## 602 cases
+load("C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/microRNAs/TCGA_normalized_counts.RData")
+
+## filter to only contain the relevant lncRNAs
+## convert ENSEMBL IDs to Symbol
+ENSEMBL_IDs <- as.character(rownames(normalized_counts))
+# for the annotation to work, remove all numbers after the .
+ENSEMBL_IDs <- gsub("\\..*", "", ENSEMBL_IDs)
+annots <- AnnotationDbi::select(org.Hs.eg.db, keys = ENSEMBL_IDs,
+                columns = "SYMBOL", keytype = "ENSEMBL")
+
+normalized_counts <- as.data.frame(cbind(ENSEMBL_IDs, normalized_counts))
+normalized_counts_renamed <- merge(normalized_counts, annots, by.x = "ENSEMBL_IDs", by.y = "ENSEMBL")
+
+lncRNAs_TCGA <- normalized_counts_renamed[normalized_counts_renamed[, 604] %in% rownames(sig_lncRNAs_counts_0.01), ]
+# data for 32 out of 40 lncRNAs
+rownames(lncRNAs_TCGA) <- lncRNAs_TCGA[, 604]
+lncRNAs_TCGA <- as.matrix(lncRNAs_TCGA[, -c(1, 604)])
+
+## convert the expression values to log 2
+## there is an issue with the classes, therefore rather complicated solution
+lncRNAs_TCGA_log2 <- matrix(0, ncol = 602, nrow = 32)
+for (i in 1:dim(lncRNAs_TCGA)[1]){
+  lncRNAs_TCGA_log2[i, ] <- log2(as.numeric(lncRNAs_TCGA[i, ]) + 1)
+}
+rownames(lncRNAs_TCGA_log2) <- rownames(lncRNAs_TCGA)
+colnames(lncRNAs_TCGA_log2) <- colnames(lncRNAs_TCGA)
+
+## read in the sampleinfo again to get the subtype and grade information
+TCGA_2021_classification <- read.table("C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/TCGA_WHO_2021_classification.txt",
+                                       sep = "\t", header = TRUE)
+
+## see if there is recurrent samples
+table(substr(colnames(normalized_counts), 14, 16))
+# 01A 01B 01C 02A 02B
+# 559  18   1  20   4
+
+## transform the object so that every column is one gene expression
+## adding the subtype, grade, primary/recurrent information
+plot_df <- as.data.frame(t(lncRNAs_TCGA_log2))
+rownames(plot_df) <- colnames(lncRNAs_TCGA_log2)
+
+## make a substring with the first 12 characters that can be found in the sheet
+TCGA_cases <- substr(colnames(lncRNAs_TCGA_log2), 1, 12)
+idh_codel_subtype <- c()
+grade <- c()
+for (i in 1:length(TCGA_cases)){
+  idh_codel_subtype[i] <- TCGA_2021_classification[which(TCGA_2021_classification[, 1] == TCGA_cases[i]), 2]
+  grade[i] <- TCGA_2021_classification[which(TCGA_2021_classification[, 1] == TCGA_cases[i]), 11]
+}
+sample_info <- cbind(idh_codel_subtype, grade)
+rownames(sample_info) <- TCGA_cases
+
+# before adding them together, make sure they are in the correct order
+sum(substr(rownames(plot_df), 1, 12) == rownames(sample_info))
+plot_df <- cbind(plot_df, sample_info)
+
+## adding the primary/recurrent information
+plot_df$primary_recurrent <- "primary"
+plot_df[grep("02A|02B", rownames(plot_df)), ]$primary_recurrent <- "recurrent"
+plot_df$idh_codel_primary_recurrent <- paste0(plot_df$idh_codel_subtype, "_", plot_df$primary_recurrent)
+
+## modify the plot_violin function based on Serafiinas code
+grade_col = c("G2"=rgb(62,183,99, maxColorValue = 255), "G3"=rgb(150,131,189, maxColorValue = 255), "G4"="#FDC086")
+
+plot_violin <- function(data, gene, filename, stat.test, stat.test.grade, stat.test.subtype) {
+  pdf(file = filename, width = 8, height = 5)
+  p <- (ggplot(data, aes(x = idh_codel_subtype, y = get(gene))) +
+        geom_violin(position = position_dodge(width = 0.8), aes(fill = grade)) +
+        geom_point(position = position_jitterdodge(jitter.width = 0.15, seed = 1, dodge.width = 0.8),
+                   alpha = 0.5, aes(group = grade, fill = grade)) +
+        labs(x = "Tumor subtype", y = "RNA expression") +
+        scale_fill_manual(values = grade_col, name = "Grade") +
+        theme_bw() +
+    guides(x = guide_axis(angle = 45)) +
+    ggtitle(gene))
+
+  if (! is.null(stat.test)) {
+  p_sig <- p + stat_pvalue_manual(stat.test, label = "p.adj.signif", y.position = 10, hide.ns = TRUE)
+  p_sig_grade <- p + stat_pvalue_manual(stat.test.grade, label = "p.adj.signif", y.position = 10, hide.ns = TRUE)
+  p_sig_subtype <- p + stat_pvalue_manual(stat.test.subtype, label = "p.adj.signif", y.position = 10, hide.ns = TRUE)
+
+  print(p_sig)
+  print(p_sig_grade)
+  print(p_sig_subtype)
+  dev.off()
+  }
+}
+
+## the p-values are a bit all over the place
+## still plot them for the first view and then fix it with Serafiina later
+## wilcox_test only accepts column names as input, no for-loop possible
+## rename all the genes to have a _ instead of - (otherwise it won't work)
+colnames(plot_df) <- gsub("-", "_", colnames(plot_df))
+
+test <- plot_df[plot_df$idh_codel_subtype %in% c("IDHmut-codel", "IDHmut-non-codel"),] %>% group_by(idh_codel_subtype)
+stat.test.grade <- plot_df[plot_df$idh_codel_subtype %in% c("IDHmut-codel", "IDHmut-non-codel"),] %>% group_by(idh_codel_subtype) %>% wilcox_test(MIR4435_2HG ~ grade)
+stat.test.subtype <- plot_df %>% group_by(grade) %>% wilcox_test(MIR4435_2HG ~ idh_codel_primary_recurrent)
+stat.test <- plot_df %>% wilcox_test(MIR4435_2HG ~ idh_codel_subtype)
+filename <- paste0(output_dir, "MIR4435_2HG_TCGA_violin_plot.pdf", sep = "")
+plot_violin(plot_df, "MIR4435_2HG", filename, stat.test, stat.test.grade, stat.test.subtype)
+
+stat.test.grade <- plot_df[plot_df$idh_codel_subtype %in% c("IDHmut-codel", "IDHmut-non-codel"),] %>% group_by(idh_codel_subtype) %>% wilcox_test(WDFY3_AS2 ~ grade)
+stat.test.subtype <- plot_df %>% group_by(grade) %>% wilcox_test(WDFY3_AS2 ~ idh_codel_primary_recurrent)
+stat.test <- plot_df %>% wilcox_test(WDFY3_AS2 ~ idh_codel_subtype)
+filename <- paste0(output_dir, "WDFY3_AS2_TCGA_violin_plot.pdf", sep = "")
+plot_violin(plot_df, "WDFY3_AS2", filename, stat.test, stat.test.grade, stat.test.subtype)
+
+stat.test.grade <- plot_df[plot_df$idh_codel_subtype %in% c("IDHmut-codel", "IDHmut-non-codel"),] %>% group_by(idh_codel_subtype) %>% wilcox_test(LINC00842 ~ grade)
+stat.test.subtype <- plot_df %>% group_by(grade) %>% wilcox_test(LINC00842 ~ idh_codel_primary_recurrent)
+stat.test <- plot_df %>% wilcox_test(LINC00842 ~ idh_codel_subtype)
+filename <- paste0(output_dir, "LINC00842_AS1_TCGA_violin_plot.pdf", sep = "")
+plot_violin(plot_df, "LINC00842", filename, stat.test, stat.test.grade, stat.test.subtype)
+
+stat.test.grade <- plot_df[plot_df$idh_codel_subtype %in% c("IDHmut-codel", "IDHmut-non-codel"),] %>% group_by(idh_codel_subtype) %>% wilcox_test(COLCA1 ~ grade)
+stat.test.subtype <- plot_df %>% group_by(grade) %>% wilcox_test(COLCA1 ~ idh_codel_primary_recurrent)
+stat.test <- plot_df %>% wilcox_test(COLCA1 ~ idh_codel_subtype)
+filename <- paste0(output_dir, "_COLCA1_TCGA_violin_plot.pdf", sep = "")
+plot_violin(plot_df, "COLCA1", filename, stat.test, stat.test.grade, stat.test.subtype)
+
+stat.test.grade <- plot_df[plot_df$idh_codel_subtype %in% c("IDHmut-codel", "IDHmut-non-codel"),] %>% group_by(idh_codel_subtype) %>% wilcox_test(ARHGEF26_AS1 ~ grade)
+stat.test.subtype <- plot_df %>% group_by(grade) %>% wilcox_test(ARHGEF26_AS1 ~ idh_codel_primary_recurrent)
+stat.test <- plot_df %>% wilcox_test(ARHGEF26_AS1 ~ idh_codel_subtype)
+filename <- paste0(output_dir, "ARHGEF26_AS1_TCGA_violin_plot.pdf", sep = "")
+plot_violin(plot_df, "ARHGEF26_AS1", filename, stat.test, stat.test.grade, stat.test.subtype)
+
+stat.test.grade <- plot_df[plot_df$idh_codel_subtype %in% c("IDHmut-codel", "IDHmut-non-codel"),] %>% group_by(idh_codel_subtype) %>% wilcox_test(DUXAP8 ~ grade)
+stat.test.subtype <- plot_df %>% group_by(grade) %>% wilcox_test(DUXAP8 ~ idh_codel_primary_recurrent)
+stat.test <- plot_df %>% wilcox_test(DUXAP8 ~ idh_codel_subtype)
+filename <- paste0(output_dir, "DUXAP8_TCGA_violin_plot.pdf", sep = "")
+plot_violin(plot_df, "DUXAP8", filename, stat.test, stat.test.grade, stat.test.subtype)
+
+stat.test.grade <- plot_df[plot_df$idh_codel_subtype %in% c("IDHmut-codel", "IDHmut-non-codel"),] %>% group_by(idh_codel_subtype) %>% wilcox_test(CRNDE ~ grade)
+stat.test.subtype <- plot_df %>% group_by(grade) %>% wilcox_test(CRNDE ~ idh_codel_primary_recurrent)
+stat.test <- plot_df %>% wilcox_test(CRNDE ~ idh_codel_subtype)
+filename <- paste0(output_dir, "CRNDE_TCGA_violin_plot.pdf", sep = "")
+plot_violin(plot_df, "CRNDE", filename, stat.test, stat.test.grade, stat.test.subtype)
+
+stat.test.grade <- plot_df[plot_df$idh_codel_subtype %in% c("IDHmut-codel", "IDHmut-non-codel"),] %>% group_by(idh_codel_subtype) %>% wilcox_test(RMST ~ grade)
+stat.test.subtype <- plot_df %>% group_by(grade) %>% wilcox_test(RMST ~ idh_codel_primary_recurrent)
+stat.test <- plot_df %>% wilcox_test(RMST ~ idh_codel_subtype)
+filename <- paste0(output_dir, "RMST_TCGA_violin_plot.pdf", sep = "")
+plot_violin(plot_df, "RMST", filename, stat.test, stat.test.grade, stat.test.subtype)
+
+stat.test.grade <- plot_df[plot_df$idh_codel_subtype %in% c("IDHmut-codel", "IDHmut-non-codel"),] %>% group_by(idh_codel_subtype) %>% wilcox_test(LINC01088 ~ grade)
+stat.test.subtype <- plot_df %>% group_by(grade) %>% wilcox_test(LINC01088 ~ idh_codel_primary_recurrent)
+stat.test <- plot_df %>% wilcox_test(LINC01088 ~ idh_codel_subtype)
+filename <- paste0(output_dir, "LINC01088_TCGA_violin_plot.pdf", sep = "")
+plot_violin(plot_df, "LINC01088", filename, stat.test, stat.test.grade, stat.test.subtype)
+
+stat.test.grade <- plot_df[plot_df$idh_codel_subtype %in% c("IDHmut-codel", "IDHmut-non-codel"),] %>% group_by(idh_codel_subtype) %>% wilcox_test(CYTOR ~ grade)
+stat.test.subtype <- plot_df %>% group_by(grade) %>% wilcox_test(CYTOR ~ idh_codel_primary_recurrent)
+stat.test <- plot_df %>% wilcox_test(CYTOR ~ idh_codel_subtype)
+filename <- paste0(output_dir, "CYTOR_TCGA_violin_plot.pdf", sep = "")
+plot_violin(plot_df, "CYTOR", filename, stat.test, stat.test.grade, stat.test.subtype)
+
+stat.test.grade <- plot_df[plot_df$idh_codel_subtype %in% c("IDHmut-codel", "IDHmut-non-codel"),] %>% group_by(idh_codel_subtype) %>% wilcox_test(FBXL19_AS1 ~ grade)
+stat.test.subtype <- plot_df %>% group_by(grade) %>% wilcox_test(FBXL19_AS1 ~ idh_codel_primary_recurrent)
+stat.test <- plot_df %>% wilcox_test(FBXL19_AS1 ~ idh_codel_subtype)
+filename <- paste0(output_dir, "FBXL19_AS1_TCGA_violin_plot.pdf", sep = "")
+plot_violin(plot_df, "FBXL19_AS1", filename, stat.test, stat.test.grade, stat.test.subtype)
+
+stat.test.grade <- plot_df[plot_df$idh_codel_subtype %in% c("IDHmut-codel", "IDHmut-non-codel"),] %>% group_by(idh_codel_subtype) %>% wilcox_test(NEAT1 ~ grade)
+stat.test.subtype <- plot_df %>% group_by(grade) %>% wilcox_test(NEAT1 ~ idh_codel_primary_recurrent)
+stat.test <- plot_df %>% wilcox_test(NEAT1 ~ idh_codel_subtype)
+filename <- paste0(output_dir, "NEAT1_TCGA_violin_plot.pdf", sep = "")
+plot_violin(plot_df, "NEAT1", filename, stat.test, stat.test.grade, stat.test.subtype)
+
+stat.test.grade <- plot_df[plot_df$idh_codel_subtype %in% c("IDHmut-codel", "IDHmut-non-codel"),] %>% group_by(idh_codel_subtype) %>% wilcox_test(HAGLR ~ grade)
+stat.test.subtype <- plot_df %>% group_by(grade) %>% wilcox_test(HAGLR ~ idh_codel_primary_recurrent)
+stat.test <- plot_df %>% wilcox_test(HAGLR ~ idh_codel_subtype)
+filename <- paste0(output_dir, "HAGLR_TCGA_violin_plot.pdf", sep = "")
+plot_violin(plot_df, "HAGLR", filename, stat.test, stat.test.grade, stat.test.subtype)
+
+stat.test.grade <- plot_df[plot_df$idh_codel_subtype %in% c("IDHmut-codel", "IDHmut-non-codel"),] %>% group_by(idh_codel_subtype) %>% wilcox_test(PVT1 ~ grade)
+stat.test.subtype <- plot_df %>% group_by(grade) %>% wilcox_test(PVT1 ~ idh_codel_primary_recurrent)
+stat.test <- plot_df %>% wilcox_test(PVT1 ~ idh_codel_subtype)
+filename <- paste0(output_dir, "PVT1_TCGA_violin_plot.pdf", sep = "")
+plot_violin(plot_df, "PVT1", filename, stat.test, stat.test.grade, stat.test.subtype)
+
+stat.test.grade <- plot_df[plot_df$idh_codel_subtype %in% c("IDHmut-codel", "IDHmut-non-codel"),] %>% group_by(idh_codel_subtype) %>% wilcox_test(DISC1_IT1 ~ grade)
+stat.test.subtype <- plot_df %>% group_by(grade) %>% wilcox_test(DISC1_IT1 ~ idh_codel_primary_recurrent)
+stat.test <- plot_df %>% wilcox_test(DISC1_IT1 ~ idh_codel_subtype)
+filename <- paste0(output_dir, "DISC1_IT1_TCGA_violin_plot.pdf", sep = "")
+plot_violin(plot_df, "DISC1_IT1", filename, stat.test, stat.test.grade, stat.test.subtype)
+
+stat.test.grade <- plot_df[plot_df$idh_codel_subtype %in% c("IDHmut-codel", "IDHmut-non-codel"),] %>% group_by(idh_codel_subtype) %>% wilcox_test(NRG3_AS1 ~ grade)
+stat.test.subtype <- plot_df %>% group_by(grade) %>% wilcox_test(NRG3_AS1 ~ idh_codel_primary_recurrent)
+stat.test <- plot_df %>% wilcox_test(NRG3_AS1 ~ idh_codel_subtype)
+filename <- paste0(output_dir, "NRG3_AS1_TCGA_violin_plot.pdf", sep = "")
+plot_violin(plot_df, "NRG3_AS1", filename, stat.test, stat.test.grade, stat.test.subtype)
+```
+
+## read in the negatively correlating miRNA targets and look for overlaps
+```{r}
+## read in the lncRNA targets
+lncRNA_corr_targets <- read.table(file = paste0(output_dir, "lncRNA_corr_targets.txt"),
+                                  sep = "\t", header = TRUE)
+
+## read in miRNA targets
+miRNA_targets <- read.xlsx("C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/microRNAs/target_genes_FC_0.3_no_30a.xlsx")
+## the first two columns are the most important ones
+
+## try to find overlaps
+co_regulated_targets <- intersect(lncRNA_corr_targets[, 2], miRNA_targets[, 2])
+
+# try to map them via pathview library to the different pathways
+# using KEGG mapper (https://www.genome.jp/kegg/mapper/search.html) on 25.07.23
+# maximum 5 of the 24 genes are mapped to the same KEGG pathway
+# top pathways: hsa05200 pathways in cancer (5 members)
+# hsa04350 TGF beta signaling
+# hsa04010 MAPK signaling pathway
+# hsa04390 Hippo signaling pathway - controls organ size by regulating cell proliferation and apoptosis
+# hsa04218 Cellular senescence
+# hsa04360 Axon guidance
+```
+
+## filtering the annotations obtained from NcPath
+Starting from the unfiltered all_lncRNA_targets_NcPath object read in above
+```{r}
+path_NcPath <- "C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/lncRNAs/NcPath_targets/"
+
+filenames_NcPath <- list.files(path_NcPath,
+                               pattern = "*.xlsx", full.names = TRUE)
+
+all_lncRNA_targets_NcPath <- lapply(filenames_NcPath, read.xlsx)
+
+# obtaining the sample names from the filenames
+lncRNA_names <- sub("^.+/", "", filenames_NcPath)
+lncRNA_names <- substr(lncRNA_names, 1, nchar(lncRNA_names) - 5)
+names(all_lncRNA_targets_NcPath) <- lncRNA_names
+
+# not filtering for unique targets (to see the different KEGG pathways)
+## extracting the TargetGene and LncRNA and hsaid columns from each dataframe
+LncRNA_pathway_df <- as.data.frame(matrix(ncol = 3, nrow = 1))
+colnames(LncRNA_pathway_df) <- c("LncRNA", "TargetGene", "PathwayID")
+for (i in 1:length(all_lncRNA_targets_NcPath)) {
+  temp_df <- c()
+  temp_LncRNA <- all_lncRNA_targets_NcPath[[i]]$LncRNA
+  temp_TargetGene <- all_lncRNA_targets_NcPath[[i]]$TargetGene
+  temp_pathway_id <- all_lncRNA_targets_NcPath[[i]]$hsaid
+  temp_df <- cbind(temp_LncRNA, temp_TargetGene, temp_pathway_id)
+  colnames(temp_df) <- c("LncRNA", "TargetGene", "PathwayID")
+  LncRNA_pathway_df <- rbind(LncRNA_pathway_df, temp_df)
+}
+# remove the first row with NA in them
+LncRNA_pathway_df <- LncRNA_pathway_df[-(1), ]
+
+## filter for the targets we know are correlating
+# the %in% doesn't work since targets that are correlating in at least 1 lncRNA will still remain
+# make a for-loop instead
+correlating_targets_pathways <- c()
+# loop through all the lncRNAs
+for (i in 1:length(unique(LncRNA_pathway_df$LncRNA))){
+  LncRNA <- unique(LncRNA_pathway_df$LncRNA)[i]
+  predicted_targets <- LncRNA_pathway_df[which(LncRNA_pathway_df[, 1] == LncRNA), ]
+  corr_targets <- lncRNA_corr_targets[which(lncRNA_corr_targets[, 1] == LncRNA), ]
+  temp <- predicted_targets[predicted_targets[, 2] %in% corr_targets[, 2], ]
+  correlating_targets_pathways <- rbind(correlating_targets_pathways, temp)
+}
+
+
+# remove the duplicates
+correlating_targets_pathways <- correlating_targets_pathways[!duplicated(correlating_targets_pathways), ]
+
+## look at what are the most frequent pathways
+sort(table(correlating_targets_pathways$PathwayID))
+## most targets are related to hsa05200 pathways in cancer
+## a total of 211 pathways were detected
+## filter out all pathways with less than 15 targets
+Pathways_filtered <- as.data.frame(table(correlating_targets_pathways$PathwayID))
+Pathways_filtered <- Pathways_filtered[which(Pathways_filtered$Freq > 15), ]
+# 110 pathways are left with more than 10 targets, 64 with more than 15 targets
+## sort for the most common ones
+Pathways_filtered_sorted <- Pathways_filtered[order(Pathways_filtered$Freq, decreasing = TRUE), ]
+# pathways are noted down in the lncRNAs secGBM google sheet
+# look up the lncRNAs and targets associated with these pathways
+lncRNAs_hsa05200 <-correlating_targets_pathways[grep("hsa05200", correlating_targets_pathways$PathwayID), ]
+lncRNAs_hsa04151 <-correlating_targets_pathways[grep("hsa04151", correlating_targets_pathways$PathwayID), ]
+lncRNAs_hsa05165 <-correlating_targets_pathways[grep("hsa05165", correlating_targets_pathways$PathwayID), ]
+lncRNAs_hsa05202 <-correlating_targets_pathways[grep("hsa05202", correlating_targets_pathways$PathwayID), ]
+lncRNAs_hsa04510 <-correlating_targets_pathways[grep("hsa04510", correlating_targets_pathways$PathwayID), ]
+lncRNAs_hsa04512 <-correlating_targets_pathways[grep("hsa04512", correlating_targets_pathways$PathwayID), ]
+lncRNAs_hsa05014 <-correlating_targets_pathways[grep("hsa05014", correlating_targets_pathways$PathwayID), ]
+lncRNAs_hsa04010 <-correlating_targets_pathways[grep("hsa04010", correlating_targets_pathways$PathwayID), ]
+lncRNAs_hsa05022 <-correlating_targets_pathways[grep("hsa05022", correlating_targets_pathways$PathwayID), ]
+lncRNAs_hsa05168 <-correlating_targets_pathways[grep("hsa05168", correlating_targets_pathways$PathwayID), ]
+lncRNAs_hsa05206 <-correlating_targets_pathways[grep("hsa05206", correlating_targets_pathways$PathwayID), ]
+lncRNAs_hsa05205 <-correlating_targets_pathways[grep("hsa05205", correlating_targets_pathways$PathwayID), ]
+
+## write the hsa05200 targets to a file to reuse them without re-running everything
+## for some reason the export works poorly, removing the column names ("LncRNA", "TargetGene", "PathwayID")
+write.table(lncRNAs_hsa05200, file = paste0(output_dir, "lncRNAs_hsa05200.txt"),
+            row.names = FALSE, col.names = FALSE, quote = FALSE)
+```
+
+## drawing a KEGG pathway of hsa05200 together with the miRNA targets
+```{r}
+## load the microRNA targets associated with the hsa05200
+miRNAs_hsa05200 <- read.delim("C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/microRNAs/miRNAs_hsa_05200.txt",
+                              sep = "\t")
+
+lncRNAs_hsa05200 <- read.delim(paste0(output_dir, "lncRNAs_hsa05200.txt"),
+                               sep = " ", header = FALSE)
+colnames(lncRNAs_hsa05200) <- c("NcRNA", "TargetGene", "Pathway")
+
+## change the colnames to make them match
+colnames(miRNAs_hsa05200) <- c("NcRNA", "TargetGene", "Pathway")
+
+## combine the targets from the miRNAs and the lncRNAs
+hsa05200_targets <- rbind(miRNAs_hsa05200, lncRNAs_hsa05200)
+
+## get the expression values
+hsa05200_expr <- RNA_results[RNA_results[, 1] %in% hsa05200_targets$TargetGene, ]
+hsa05200_expr <- hsa05200_expr[, c(1, 3)]
+gene_names <- hsa05200_expr[, 1]
+
+## try to convert to Entrez ID
+annots <- AnnotationDbi::select(org.Hs.eg.db, keys = gene_names,
+                columns = "ENTREZID", keytype = "SYMBOL")
+
+hsa05200_expr_2 <- as.data.frame(cbind(annots[, 2], hsa05200_expr[, 2]))
+hsa05200_expr_2[, 2] <- as.numeric(hsa05200_expr_2[, 2])
+
+pathview(gene.data = hsa05200_expr_2,
+         pathway.id = "hsa05200",
+         species = "hsa",
+         out.suffix = "hsa05200_pathway")
+```
+
+
+### Re-running DESeq2 with just the lncRNAs
+## Read in the raw counts and the lncRNA annotations
+```{r}
+# reading in the raw counts
+gene_expr_raw <- read.table("C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/lncRNAs/gene_expression_raw_hg38_rsubread.txt",
+                            sep = "\t", header = TRUE, stringsAsFactors = FALSE)
+gene_expr_raw <- gene_expr_raw[complete.cases(gene_expr_raw), ]
+
+# lncRNA annotations
+all_lncRNAs <- rtracklayer::import("C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/gencode.v30.long_noncoding_RNAs.gtf")
+all_lncRNAs_df <- as.data.frame(all_lncRNAs)
+
+# better to put it into a dataframe to not have to convert it from a character to a vector
+lncRNA_names <- as.data.frame(unique(all_lncRNAs_df[, c("gene_name", "gene_id")]))
+
+# filter the raw counts to only contain lncRNAs
+lncRNA_raw_counts <- gene_expr_raw[gene_expr_raw[, 1] %in% lncRNA_names[, 1], ]
+
+## remove the counts for cases 4 and 7 (oligo cases)
+lncRNA_raw_counts <- lncRNA_raw_counts[, -c(8, 9, 14, 15)]
+
+# write the raw counts of the significant lncRNAs to a file
+raw_sig_lncRNAs <- lncRNA_raw_counts[lncRNA_raw_counts[, 1] %in% rownames(sig_lncRNAs_counts_0.01), ]
+rownames(raw_sig_lncRNAs) <- raw_sig_lncRNAs[, 1]
+raw_sig_lncRNAs <- raw_sig_lncRNAs[, -(1)]
+
+write.table(raw_sig_lncRNAs, file = paste0(output_dir, "raw_counts_all_significant_lncRNAs_q_01.txt"),
+            sep = "\t", row.names = TRUE, quote = FALSE)
+
+# calculate the median raw expression for a and b similarly to the noncoding RNAs
+raw_counts_a <- raw_sig_lncRNAs[, c(1, 3, 5, 7, 9, 11)]
+raw_counts_b <- raw_sig_lncRNAs[, c(2, 4, 6, 8, 10, 12)]
+
+row_median_a <- apply(raw_counts_a, 1, median)
+row_median_b <- apply(raw_counts_b, 1, median)
+raw_median_counts <- cbind(row_median_a, row_median_b)
+
+write.table(raw_median_counts, file = paste0(output_dir, "raw_median_counts_sig_lncRNAs_q_01.txt"),
+            sep = "\t", row.names = TRUE, quote = FALSE)
+```
+
+
+## Serafiinas code used to generate the used files
+### creating the raw counts file 
+```{r}
+library(Rsubread)
+
+bam.files <- list.files("/bmt-data/genomics/projects/secondary_gbm/rna-seq/alignments/", pattern = "[1-8][ab].bam$")
+
+bam.files <- paste0("/bmt-data/genomics/projects/secondary_gbm/rna-seq/alignments/", bam.files)
+
+fc <- featureCounts(bam.files, annot.inbuilt = "hg38", isPairedEnd = TRUE)
+# entrez gene ids
+write.table(fc)
+
+counts <- read.table("gene_expr/hg38_rsubread/gene_expr_counts_rsubread.txt",
+                     sep = "\t", stringsAsFactors = FALSE, header = TRUE)
+annotations <- read.table("gene_expr/hg38_rsubread/gene_expr_annotation_rsubread.txt",
+                          sep = "\t", stringsAsFactors = FALSE, header = TRUE)
+
+colnames(counts) <- c("counts1a", "counts1b",
+                      "counts2a", "counts2b",
+                      "counts3a", "counts3b",
+                      "counts4a", "counts4b",
+                      "counts5a", "counts5b",
+                      "counts6a", "counts6b",
+                      "counts7a", "counts7b",
+                      "counts8a", "counts8b")
+
+
+library(annotate)
+library(org.Hs.eg.db)
+
+symbols <- getSYMBOL(as.character(annotations$GeneID), data = "org.Hs.eg")
+
+counts <- cbind(symbols, counts, stringsAsFactors = FALSE)
+
+write.table(counts, "gene_expr/hg38_rsubread/gene_expression_raw_hg38_rsubread.txt",
+            sep = "\t", quote = FALSE, row.names = FALSE)
+```

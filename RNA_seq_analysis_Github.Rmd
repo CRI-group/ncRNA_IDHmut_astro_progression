@@ -1,0 +1,3497 @@
+---
+title: "Secondary GBM RNA_seq"
+author: "Anja Hartewig"
+date: "8 4 2022"
+output: html_document
+---
+
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+## used libraries
+library(ggplot2)
+library(ggrepel)
+library(ComplexHeatmap)
+library(circlize)
+library(grid)
+library(ggfortify)
+library(ggpubr)
+library(factoextra) # for PCA variance
+library(ggsci) # for using the nature colors
+library(scales) # for looking at the colors
+library(psych) # using the pairs.panel function
+library(DESeq2) # for rlog transformation
+library(stringr)
+library(openxlsx)
+library(VennDiagram)
+library(enrichR)
+library(rtracklayer)
+library(dplyr)
+library(tidyr)
+library(gplots) ## for the expression barplots
+library(org.Hs.eg.db) ## for the TCGA violin plots
+library(tibble)
+library(forcats) # for reshaping the horizontal plots
+library(rstatix)
+library(ggpubr) # for adding p-vals in the violin plots
+
+output_dir <- "C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/RNA-seq/"
+miRNA_input <- "C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/microRNAs/"
+lncRNA_input <- "C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/microRNA Paper/"
+GLASS_input <- "C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/GLASS data/"
+Reactome_input <- "C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/microRNA Paper/Reactome Relationship/"
+Sloan_input <- "C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/microRNA Paper/Sloan data/"
+
+## read in the pathway annotations (object is named pathway_names)
+load(paste0(Reactome_input, "Reactome_categories.RData"))
+## read in the pathway annotations (object is named pathway_identifiers)
+load(paste0(Reactome_input, "Reactome_categories_IDs.RData"))
+## read in the Reactome annotations
+genes_annotated_df <- read.delim(paste0(output_dir, "TG_DE_genes_annotated_to_categories.txt"))
+
+writeLines(capture.output(sessionInfo()), paste0(output_dir, "RNA_seq_sessionInfo.txt"))
+
+websiteLive <- getOption("enrichR.live")
+if (websiteLive) {
+    listEnrichrSites()
+    setEnrichrSite("Enrichr") # Human genes
+}
+```
+
+## define the color palettes to be used for the plots
+```{r}
+## color palettes for the different validation groups
+## TCGA: #B03060, GLASS: #A5FFA5, TG: #1C86EE
+
+# for the tumor grades, taken from NEJM palette
+grade_pal <- c("#ffae00b2", "#775c40b2", "#89138dcb")
+
+# for up and down/non-DE genes, taken from Nature palette, grey added
+gene_pal <- c("#3C5488B2", "#d5d3d3", "#E64B35B2")
+
+## for the adj. p-val (brown)
+adj_p_val_anno <- c("#d5d3d3", "#ac2500b2")
+
+## for the LFC
+LFC_anno <- c("#00b7d7", "#d5d3d3", "#f83479")
+
+## for the odd's ratio
+odds_anno <- c("#d5d3d3", "#390347b2")
+
+## for the combined score
+combined_score <- c("#d5d3d3", "#014700b2")
+
+## for the median expression
+expression_anno <- c("#d5d3d3", "#580016b2")
+
+## for the number of targets
+target_anno <- c("#d5d3d3", "#3a7d39b2")
+
+## for shared/unique markings
+shared_unique <- c("#66C2A5", "#D0B44B", "#B3A0E6")
+```
+
+## loading in DESeq2 results and filter for significance
+only genes with padj are included in this datasheet
+```{r}
+RNA_results <- read.delim(paste0(output_dir, "astro_DESeq2_padj_included.CSV"),
+                          header = TRUE, sep = ";")
+
+## filter for padj < 0.05 and |LFC| > 1
+RNA_sig_genes <- subset(RNA_results, RNA_results[, 7] < 0.05)
+RNA_sig_genes <- subset(RNA_sig_genes, abs(RNA_sig_genes[, 3]) > 1)
+
+## load in the counts
+RNA_counts <- read.delim(paste0(output_dir, "RNA_seq_gene_counts.txt"),
+              header = TRUE, sep = "\t")
+## filter for the significant ones
+RNA_sig_counts <- RNA_counts[RNA_counts[, 1] %in% RNA_sig_genes[, 1], ]
+rownames(RNA_sig_counts) <- RNA_sig_counts[, 1]
+RNA_sig_counts <- RNA_sig_counts[, (- 1)]
+
+## remove the genes with no adjusted p-val
+RNA_counts_filtered <- RNA_counts[RNA_counts[, 1] %in% RNA_results[, 1], ]
+rownames(RNA_counts_filtered) <- RNA_counts_filtered[, 1]
+RNA_counts_filtered <- RNA_counts_filtered[, (- 1)]
+
+## add clinical parameters, e.g. for PCA
+grade <- as.factor(as.numeric(c(3, 4, 3, 4, 3, 4, 2, 4, 3, 4, 2, 4)))
+therapy <- c("none", "combination", "none", "combination", "none",
+             "radiation", "radiation", "combination", "none",
+             "combination", "none", "combination")
+time <- as.numeric(c(81, 81, 145, 145, 38, 38, 131, 131, 47, 47, 25, 25))
+Ki67_RNA <- RNA_counts_filtered[grep("MKI67", rownames(RNA_counts_filtered)), ]
+# large small ratio refers to the ratio between small RNAs and long RNAs
+# during the extraction
+large_small_ratio <- c(7.49, 10.61, 3.85, 7.53, 3.43, 9.68,
+                       4.95, 5.97, 7.15, 4.02, 7.05, 11.01)
+names(large_small_ratio) <- colnames(Ki67_RNA)
+large_small_ratio <- as.data.frame(t(large_small_ratio))
+
+## read in all the lncRNAs from DESeq2 (see lncRNA_rerunning.Rmd)
+all_lncRNAs_DESeq2 <- read.delim(paste0(lncRNA_input, "all_lncRNAs_DESeq2.txt"))
+
+## read in the miRNA results
+miRNA_counts <- read.delim(paste0(miRNA_input, "miRNA_normalized_R.csv"),
+                           header = TRUE, sep = ";")
+miRNA_results <- read.delim(paste0(miRNA_input, "miRNAs_DESeq2_only_R.csv"),
+                           header = TRUE, sep = ",")
+## remove all those that have #N/A in their adjusted p-val
+miRNA_results_filtered <- miRNA_results[-which(miRNA_results[, 7] == "#N/A"), ]
+miRNA_counts_filtered <- miRNA_counts[miRNA_counts[, 1] %in% miRNA_results_filtered[, 1], ]
+
+rownames(miRNA_counts_filtered) <- miRNA_counts_filtered[, 1]
+miRNA_counts_filtered <- miRNA_counts_filtered[, (- 1)]
+
+sig_miRNAs <- read.delim(paste0(miRNA_input, "significant_miRNAs_R.csv"),
+                         sep = ";")
+
+sig_miRNA_counts <- miRNA_counts[miRNA_counts[, 1] %in% sig_miRNAs[, 1], ]
+rownames(sig_miRNA_counts) <- sig_miRNA_counts[, 1]
+sig_miRNA_counts <- sig_miRNA_counts[, (- 1)]
+
+## combine the two count types
+combined_counts_filtered <- rbind(RNA_counts_filtered, miRNA_counts_filtered)
+```
+
+## checking the DE status of the genes published from Sojka et al
+(https://www.nature.com/articles/s41556-024-01583-9)
+```{r}
+## table 2: hCO RNA-seq WGCNA gene modules
+TableS2_Sloan <- read.xlsx(paste0(lncRNA_input, "TableS2_Sloan_et_al.xlsx"))
+## check overlap
+length(intersect(TableS2_Sloan[, 1], RNA_sig_genes[, 1]))
+Gene_module_genes <- RNA_sig_genes[RNA_sig_genes[, 1] %in% TableS2_Sloan[, 1], ]
+## check the distribution to late, early, etc.
+DE_module_genes <- TableS2_Sloan[TableS2_Sloan[, 1] %in% RNA_sig_genes[, 1], ]
+
+## for checking whether they are part of TG unique, etc.
+TG_GLASS_shared_genes <- read.xlsx(paste0(output_dir, "TG_GLASS_shared_combined_72.xlsx"))
+
+TG_unique <- read.delim(paste0(lncRNA_input, "TG_unique_genes.txt"),
+                        sep = "\t")
+not_measured_in_all <- read.delim(paste0(lncRNA_input, "not_measured_in_all_genes.txt"),
+                        sep = "\t")
+
+all_shared_up <- read.delim(paste0(lncRNA_input, "TCGA_TG_GLASS_up.txt"),
+                            header = FALSE)
+all_shared_down <- read.delim(paste0(lncRNA_input, "TCGA_TG_GLASS_down.txt"),
+                              header = FALSE)
+all_shared <- rbind(all_shared_up, all_shared_down)
+TG_TCGA_shared <- rbind(read.table(paste0(lncRNA_input, "TG_TCGA_shared_up.txt")),
+                        read.table(paste0(lncRNA_input, "TG_TCGA_shared_down.txt")))
+
+## Go through the modules and see how many of those are up/down
+Early_TG <- DE_module_genes[which(DE_module_genes$Maturation_module == "Early"), ]
+Early_TG_LFC <- RNA_sig_genes[RNA_sig_genes[, 1] %in% Early_TG$Gene, ]
+## check how they are annotated according to Reactome
+genes_annotated_df$Gene <- rownames(genes_annotated_df)
+Reactome_Early_TG <- merge(Early_TG, genes_annotated_df, by = "Gene", all.x = TRUE)
+## remove the Maturation_Module and Gene name
+Reactome_Early_TG <- Reactome_Early_TG[, -(2)]
+rownames(Reactome_Early_TG) <- Reactome_Early_TG$Gene
+Reactome_Early_TG <- Reactome_Early_TG[, -(1)]
+## also separate into up- and downregulated
+up_genes <- Early_TG_LFC[which(Early_TG_LFC$log2FoldChange > 0), 1]
+Reactome_Early_TG_up <- Reactome_Early_TG[up_genes, ]
+down_genes <- Early_TG_LFC[which(Early_TG_LFC$log2FoldChange < 0), 1]
+Reactome_Early_TG_down <- Reactome_Early_TG[down_genes, ]
+## check how they distribute to categories
+annotations <- data.frame(
+  Count_Genes = colSums(Reactome_Early_TG == 1, na.rm = TRUE),  # Count genes
+  Count_NAs = colSums(is.na(Reactome_Early_TG)),  # Count NAs
+  Count_up = colSums(Reactome_Early_TG_up == 1, na.rm = TRUE),  # Count genes
+  Count_NAs = colSums(is.na(Reactome_Early_TG_up)),  # Count NAs
+  Count_down = colSums(Reactome_Early_TG_down == 1, na.rm = TRUE),  # Count genes
+  Count_NAs = colSums(is.na(Reactome_Early_TG_down))  # Count NAs
+)
+
+## write to file
+write.csv(t(annotations), paste0(lncRNA_input, "Early_Reactome_annotation.csv"),
+          quote = FALSE)
+write.csv(Reactome_Early_TG, paste0(lncRNA_input, "Early_Reactome_annotation_genes.csv"),
+          quote = FALSE)
+
+## check how they are distributed to TG unique, GLASS, TCGA..
+Early_all <- intersect(rownames(Reactome_Early_TG), all_shared[, 1]) # 9
+Early_unique <- intersect(rownames(Reactome_Early_TG), TG_unique[, 1]) # 26
+Early_TG_GLASS <- intersect(rownames(Reactome_Early_TG), TG_GLASS_shared_genes[, 1]) # 2
+Early_TG_shared <- intersect(rownames(Reactome_Early_TG), TG_TCGA_shared[, 1]) # 14
+Early_not_measured <- intersect(rownames(Reactome_Early_TG), not_measured_in_all[, 1]) # 4
+## 55 genes
+## repeat for up- and downregulated separately
+length(intersect(rownames(Reactome_Early_TG_up), all_shared[, 1])) # 7
+length(intersect(rownames(Reactome_Early_TG_up), TG_unique[, 1])) # 9
+length(intersect(rownames(Reactome_Early_TG_up), TG_GLASS_shared_genes[, 1])) # 1
+length(intersect(rownames(Reactome_Early_TG_up), TG_TCGA_shared[, 1])) # 11
+length(intersect(rownames(Reactome_Early_TG_up), not_measured_in_all[, 1])) # 2
+length(intersect(rownames(Reactome_Early_TG_down), all_shared[, 1])) # 2
+length(intersect(rownames(Reactome_Early_TG_down), TG_unique[, 1])) # 17
+length(intersect(rownames(Reactome_Early_TG_down), TG_GLASS_shared_genes[, 1])) # 1
+length(intersect(rownames(Reactome_Early_TG_down), TG_TCGA_shared[, 1])) # 3
+length(intersect(rownames(Reactome_Early_TG_down), not_measured_in_all[, 1])) # 2
+
+Late_TG <- DE_module_genes[which(DE_module_genes$Maturation_module == "Late"), ]
+Late_TG_LFC <- RNA_sig_genes[RNA_sig_genes[, 1] %in% Late_TG$Gene, ]
+Reactome_Late_TG <- merge(Late_TG, genes_annotated_df, by = "Gene", all.x = TRUE)
+## remove the Maturation_Module and Gene name
+Reactome_Late_TG <- Reactome_Late_TG[, -(2)]
+rownames(Reactome_Late_TG) <- Reactome_Late_TG$Gene
+Reactome_Late_TG <- Reactome_Late_TG[, -(1)]
+## also separate into up- and downregulated
+up_genes <- Late_TG_LFC[which(Late_TG_LFC$log2FoldChange > 0), 1]
+Reactome_Late_TG_up <- Reactome_Late_TG[up_genes, ]
+down_genes <- Late_TG_LFC[which(Late_TG_LFC$log2FoldChange < 0), 1]
+Reactome_Late_TG_down <- Reactome_Late_TG[down_genes, ]
+## check how they distribute to categories
+annotations <- data.frame(
+  Count_Genes = colSums(Reactome_Late_TG == 1, na.rm = TRUE),  # Count genes
+  Count_NAs = colSums(is.na(Reactome_Late_TG)), # Count NAs
+  Count_up = colSums(Reactome_Late_TG_up == 1, na.rm = TRUE), # Count genes
+  Count_NAs = colSums(is.na(Reactome_Late_TG_up)), # Count NAs
+  Count_down = colSums(Reactome_Late_TG_down == 1, na.rm = TRUE), # Count genes
+  Count_NAs = colSums(is.na(Reactome_Late_TG_down))
+)
+## write to file
+write.csv(t(annotations), paste0(lncRNA_input, "Late_Reactome_annotation.csv"),
+          quote = FALSE)
+write.csv(Reactome_Late_TG, paste0(lncRNA_input, "Reactome_Late_annotation_genes.csv"),
+          quote = FALSE)
+## check how they go in terms of TG uniqe, etc.
+## check how they are distributed to TG unique, GLASS, TCGA..
+length(intersect(rownames(Reactome_Late_TG), all_shared[, 1])) # 6
+length(intersect(rownames(Reactome_Late_TG), TG_unique[, 1])) # 18
+length(intersect(rownames(Reactome_Late_TG), TG_GLASS_shared_genes[, 1])) # 11
+length(intersect(rownames(Reactome_Late_TG), TG_TCGA_shared[, 1])) # 5
+length(intersect(rownames(Reactome_Late_TG), not_measured_in_all[, 1])) # 2
+## 42 genes, 42 are allocated
+## repeat for up- and downregulated separately
+length(intersect(rownames(Reactome_Late_TG_up), all_shared[, 1])) # 0
+length(intersect(rownames(Reactome_Late_TG_up), TG_unique[, 1])) # 0
+length(intersect(rownames(Reactome_Late_TG_up), TG_GLASS_shared_genes[, 1])) # 0
+length(intersect(rownames(Reactome_Late_TG_up), TG_TCGA_shared[, 1])) # 1
+length(intersect(rownames(Reactome_Late_TG_up), not_measured_in_all[, 1])) # 0
+length(intersect(rownames(Reactome_Late_TG_down), all_shared[, 1])) # 6
+length(intersect(rownames(Reactome_Late_TG_down), TG_unique[, 1])) # 18
+length(intersect(rownames(Reactome_Late_TG_down), TG_GLASS_shared_genes[, 1])) # 11
+length(intersect(rownames(Reactome_Late_TG_down), TG_TCGA_shared[, 1])) # 4
+length(intersect(rownames(Reactome_Late_TG_down), not_measured_in_all[, 1])) # 2
+
+## extract the downregulated Late ones in TG_unique and GLASS_shared
+Late_TG_unique_down <- intersect(rownames(Reactome_Late_TG_down), TG_unique[, 1])
+Late_TG_GLASS_down <- intersect(rownames(Reactome_Late_TG_down), TG_GLASS_shared_genes[, 1])
+
+## also get their LFC for IPA
+Late_TG_unique_down_LFC <- Late_TG_LFC[Late_TG_LFC$genes %in% Late_TG_unique_down, ]
+Late_TG_GLASS_down_LFC <- Late_TG_LFC[Late_TG_LFC$genes %in% Late_TG_GLASS_down, ]
+
+## write to file
+write.table(Late_TG_unique_down_LFC, file = paste0(output_dir, "Late_TG_unique_down_IPA.tsv"),
+            quote = FALSE, row.names = FALSE)
+write.table(Late_TG_GLASS_down_LFC, file = paste0(output_dir, "Late_TG_GLASS_down_IPA.tsv"),
+            quote = FALSE, row.names = FALSE)
+
+Early_Middle_TG <- DE_module_genes[which(DE_module_genes$Maturation_module == "Early_Middle"), ]
+Early_Middle_TG_LFC <- RNA_sig_genes[RNA_sig_genes[, 1] %in% Early_Middle_TG$Gene, ]
+Reactome_Early_Middle_TG <- merge(Early_Middle_TG, genes_annotated_df, by = "Gene", all.x = TRUE)
+## remove the Maturation_Module and Gene name
+Reactome_Early_Middle_TG <- Reactome_Early_Middle_TG[, -(2)]
+rownames(Reactome_Early_Middle_TG) <- Reactome_Early_Middle_TG$Gene
+Reactome_Early_Middle_TG <- Reactome_Early_Middle_TG[, -(1)]
+## also separate into up- and downregulated
+up_genes <- Early_Middle_TG_LFC[which(Early_Middle_TG_LFC$log2FoldChange > 0), 1]
+Reactome_Early_Middle_TG_up <- Reactome_Early_Middle_TG[up_genes, ]
+down_genes <- Early_Middle_TG_LFC[which(Early_Middle_TG_LFC$log2FoldChange < 0), 1]
+Reactome_Early_Middle_TG_down <- Reactome_Early_Middle_TG[down_genes, ]
+## 10 Signal Transduction are not cell cycle, 27 are
+## check how they distribute to categories
+annotations <- data.frame(
+  Count_Genes = colSums(Reactome_Early_Middle_TG == 1, na.rm = TRUE),  # Count genes
+  Count_NAs = colSums(is.na(Reactome_Early_Middle_TG)),  # Count NAs
+  Count_up = colSums(Reactome_Early_Middle_TG_up == 1, na.rm = TRUE), # Count genes
+  Count_NAs = colSums(is.na(Reactome_Early_Middle_TG_up)), # Count NAs
+  Count_down = colSums(Reactome_Early_Middle_TG_down == 1, na.rm = TRUE), # Count genes
+  Count_NAs = colSums(is.na(Reactome_Early_Middle_TG_down))
+)
+## write to file
+write.csv(t(annotations), paste0(lncRNA_input, "Early_Middle_Reactome_annotation.csv"),
+          quote = FALSE)
+write.csv(Reactome_Early_Middle_TG, paste0(lncRNA_input, "Early_Middle_Reactome_annotation_genes.csv"),
+          quote = FALSE)
+## 119 up, 6 down
+length(intersect(rownames(Reactome_Early_Middle_TG), all_shared[, 1])) # 106
+length(intersect(rownames(Reactome_Early_Middle_TG), TG_unique[, 1])) # 7
+length(intersect(rownames(Reactome_Early_Middle_TG), TG_GLASS_shared_genes[, 1])) # 4
+length(intersect(rownames(Reactome_Early_Middle_TG), TG_TCGA_shared[, 1])) # 6
+length(intersect(rownames(Reactome_Early_Middle_TG), not_measured_in_all[, 1])) # 2
+## 125 genes, 125 are allocated
+## check for up and down
+length(intersect(rownames(Reactome_Early_Middle_TG_up), all_shared[, 1])) # 106
+length(intersect(rownames(Reactome_Early_Middle_TG_up), TG_unique[, 1])) # 3
+length(intersect(rownames(Reactome_Early_Middle_TG_up), TG_GLASS_shared_genes[, 1])) # 4
+length(intersect(rownames(Reactome_Early_Middle_TG_up), TG_TCGA_shared[, 1])) # 5
+length(intersect(rownames(Reactome_Early_Middle_TG_up), not_measured_in_all[, 1])) # 1
+length(intersect(rownames(Reactome_Early_Middle_TG_down), all_shared[, 1])) # 0
+length(intersect(rownames(Reactome_Early_Middle_TG_down), TG_unique[, 1])) # 4
+length(intersect(rownames(Reactome_Early_Middle_TG_down), TG_GLASS_shared_genes[, 1])) # 0
+length(intersect(rownames(Reactome_Early_Middle_TG_down), TG_TCGA_shared[, 1])) # 1
+length(intersect(rownames(Reactome_Early_Middle_TG_down), not_measured_in_all[, 1])) # 1
+
+## check the annotation of the all_shared upregulated genes
+up_all_genes <- intersect(rownames(Reactome_Early_Middle_TG_up), all_shared[, 1]) # 106
+up_all_genes_annot <- Reactome_Early_Middle_TG[up_all_genes, ]
+
+Middle_Late_TG <- DE_module_genes[which(DE_module_genes$Maturation_module == "Middle_Late"), ]
+Middle_Late_TG_LFC <- RNA_sig_genes[RNA_sig_genes[, 1] %in% Middle_Late_TG$Gene, ]
+Reactome_Middle_Late_TG <- merge(Middle_Late_TG, genes_annotated_df, by = "Gene", all.x = TRUE)
+## remove the Maturation_Module and Gene name
+Reactome_Middle_Late_TG <- Reactome_Middle_Late_TG[, -(2)]
+rownames(Reactome_Middle_Late_TG) <- Reactome_Middle_Late_TG$Gene
+Reactome_Middle_Late_TG <- Reactome_Middle_Late_TG[, -(1)]
+## also separate into up- and downregulated
+up_genes <- Middle_Late_TG_LFC[which(Middle_Late_TG_LFC$log2FoldChange > 0), 1]
+Reactome_Middle_Late_TG_up <- Reactome_Middle_Late_TG[up_genes, ]
+down_genes <- Middle_Late_TG_LFC[which(Middle_Late_TG_LFC$log2FoldChange < 0), 1]
+Reactome_Middle_Late_TG_down <- Reactome_Middle_Late_TG[down_genes, ]
+## check how they distribute to categories
+annotations <- data.frame(
+  Count_Genes = colSums(Reactome_Middle_Late_TG == 1, na.rm = TRUE),  # Count genes
+  Count_NAs = colSums(is.na(Reactome_Middle_Late_TG)),  # Count NAs
+  Count_up = colSums(Reactome_Middle_Late_TG_up == 1, na.rm = TRUE), # Count genes
+  Count_NAs = colSums(is.na(Reactome_Middle_Late_TG_up)), # Count NAs
+  Count_down = colSums(Reactome_Middle_Late_TG_down == 1, na.rm = TRUE), # Count genes
+  Count_NAs = colSums(is.na(Reactome_Middle_Late_TG_down))
+)
+## write to file
+write.csv(t(annotations), paste0(lncRNA_input, "Reactome_Middle_Late_annotation.csv"),
+          quote = FALSE)
+write.csv(Reactome_Middle_Late_TG, paste0(lncRNA_input, "Reactome_Middle_Late_Reactome_annotations_genes.csv"),
+          quote = FALSE)
+# 12 up, 77 down
+length(intersect(rownames(Reactome_Middle_Late_TG), all_shared[, 1])) # 5
+length(intersect(rownames(Reactome_Middle_Late_TG), TG_unique[, 1])) # 48
+length(intersect(rownames(Reactome_Middle_Late_TG), TG_GLASS_shared_genes[, 1])) # 18
+length(intersect(rownames(Reactome_Middle_Late_TG), TG_TCGA_shared[, 1])) # 9
+length(intersect(rownames(Reactome_Middle_Late_TG), not_measured_in_all[, 1])) # 9
+## for up- and down separately
+length(intersect(rownames(Reactome_Middle_Late_TG_up), all_shared[, 1])) # 0
+length(intersect(rownames(Reactome_Middle_Late_TG_up), TG_unique[, 1])) # 7
+length(intersect(rownames(Reactome_Middle_Late_TG_up), TG_GLASS_shared_genes[, 1])) # 0
+length(intersect(rownames(Reactome_Middle_Late_TG_up), TG_TCGA_shared[, 1])) # 2
+length(intersect(rownames(Reactome_Middle_Late_TG_up), not_measured_in_all[, 1])) # 3
+length(intersect(rownames(Reactome_Middle_Late_TG_down), all_shared[, 1])) # 5
+length(intersect(rownames(Reactome_Middle_Late_TG_down), TG_unique[, 1])) # 41
+length(intersect(rownames(Reactome_Middle_Late_TG_down), TG_GLASS_shared_genes[, 1])) # 18
+length(intersect(rownames(Reactome_Middle_Late_TG_down), TG_TCGA_shared[, 1])) # 7
+length(intersect(rownames(Reactome_Middle_Late_TG_down), not_measured_in_all[, 1])) # 6
+
+## extract the downregulated Late ones in TG_unique and GLASS_shared
+Middle_Late_TG_unique_down <- intersect(rownames(Reactome_Middle_Late_TG_down), TG_unique[, 1])
+Middle_Late_TG_GLASS_down <- intersect(rownames(Reactome_Middle_Late_TG_down), TG_GLASS_shared_genes[, 1])
+
+## also get their LFC for IPA
+Middle_Late_TG_unique_down_LFC <- Middle_Late_TG_LFC[Middle_Late_TG_LFC$genes %in% Middle_Late_TG_unique_down, ]
+Middle_Late_TG_GLASS_down_LFC <- Middle_Late_TG_LFC[Middle_Late_TG_LFC$genes %in% Middle_Late_TG_GLASS_down, ]
+
+## write to file
+write.table(Middle_Late_TG_unique_down_LFC, file = paste0(output_dir, "Middle_Late_TG_unique_down_IPA.tsv"),
+            quote = FALSE, row.names = FALSE)
+write.table(Middle_Late_TG_GLASS_down_LFC, file = paste0(output_dir, "Middle_Late_TG_GLASS_down_IPA.tsv"),
+            quote = FALSE, row.names = FALSE)
+
+Middle_TG <- DE_module_genes[which(DE_module_genes$Maturation_module == "Middle"), ]
+Middle_TG_LFC <- RNA_sig_genes[RNA_sig_genes[, 1] %in% Middle_TG$Gene, ]
+Reactome_Middle_TG <- merge(Middle_TG, genes_annotated_df, by = "Gene", all.x = TRUE)
+## remove the Maturation_Module and Gene name
+Reactome_Middle_TG <- Reactome_Middle_TG[, -(2)]
+rownames(Reactome_Middle_TG) <- Reactome_Middle_TG$Gene
+Reactome_Middle_TG <- Reactome_Middle_TG[, -(1)]
+## also separate into up- and downregulated
+up_genes <- Middle_TG_LFC[which(Middle_TG_LFC$log2FoldChange > 0), 1]
+Reactome_Middle_TG_up <- Reactome_Middle_TG[up_genes, ]
+down_genes <- Middle_TG_LFC[which(Middle_TG_LFC$log2FoldChange < 0), 1]
+Reactome_Middle_TG_down <- Reactome_Middle_TG[down_genes, ]
+## check how they distribute to categories
+annotations <- data.frame(
+  Count_Genes = colSums(Reactome_Middle_TG == 1, na.rm = TRUE),  # Count genes
+  Count_NAs = colSums(is.na(Reactome_Middle_TG)),  # Count NAs
+  Count_up = colSums(Reactome_Middle_TG_up == 1, na.rm = TRUE), # Count genes
+  Count_NAs = colSums(is.na(Reactome_Middle_TG_up)), # Count NAs
+  Count_down = colSums(Reactome_Middle_TG_down == 1, na.rm = TRUE), # Count genes
+  Count_NAs = colSums(is.na(Reactome_Middle_TG_down))
+)
+## write to file
+write.csv(t(annotations), paste0(lncRNA_input, "Reactome_Middle_annotation.csv"),
+          quote = FALSE)
+write.csv(Reactome_Middle_TG, paste0(lncRNA_input, "Reactome_Middle_Reactome_annotations_genes.csv"),
+          quote = FALSE)
+length(intersect(rownames(Reactome_Middle_TG), all_shared[, 1])) # 9
+length(intersect(rownames(Reactome_Middle_TG), TG_unique[, 1])) # 18
+length(intersect(rownames(Reactome_Middle_TG), TG_GLASS_shared_genes[, 1])) # 5
+length(intersect(rownames(Reactome_Middle_TG), TG_TCGA_shared[, 1])) # 7
+length(intersect(rownames(Reactome_Middle_TG), not_measured_in_all[, 1])) # 2
+## 41, 41 are allocated
+## up- and down separated
+length(intersect(rownames(Reactome_Middle_TG_up), all_shared[, 1])) # 7
+length(intersect(rownames(Reactome_Middle_TG_up), TG_unique[, 1])) # 6
+length(intersect(rownames(Reactome_Middle_TG_up), TG_GLASS_shared_genes[, 1])) # 0
+length(intersect(rownames(Reactome_Middle_TG_up), TG_TCGA_shared[, 1])) # 4
+length(intersect(rownames(Reactome_Middle_TG_up), not_measured_in_all[, 1])) # 2
+length(intersect(rownames(Reactome_Middle_TG_down), all_shared[, 1])) # 2
+length(intersect(rownames(Reactome_Middle_TG_down), TG_unique[, 1])) # 12
+length(intersect(rownames(Reactome_Middle_TG_down), TG_GLASS_shared_genes[, 1])) # 5
+length(intersect(rownames(Reactome_Middle_TG_down), TG_TCGA_shared[, 1])) # 3
+length(intersect(rownames(Reactome_Middle_TG_down), not_measured_in_all[, 1])) # 0
+
+## check how many of those are DE lncRNAs
+sum(Gene_module_genes[, 1] %in% DE_lncRNAs_all)
+DE_module_genes[DE_module_genes[, 1] %in% DE_lncRNAs_all == TRUE, 1]
+
+## read in the normalised counts
+## normalisation was done in Sloan_et_al.R notebook
+Sloan_norm_counts <- read.xlsx(paste0(Sloan_input, "Sloan_norm_counts.xlsx"),
+                               rowNames = TRUE)
+
+## make a loop for the 5 different modules
+heatmap_pal <- colorRamp2(c(-4, 0, 4), c("#3C5488B2", "#d5d3d3", "#E64B35B2"))
+
+for (i in unique(DE_module_genes$Maturation_module)) {
+  DE_genes <- DE_module_genes[which(DE_module_genes$Maturation_module == i), ]
+  DE_genes_counts <- Sloan_norm_counts[rownames(Sloan_norm_counts) %in% DE_genes[, 1], ]
+
+  ## obtain the data for LFC as the row annotations
+  LFC_DE_module_genes <- RNA_sig_genes[(RNA_sig_genes[, 1] %in% DE_genes[, 1]), ]
+  ## make sure the ordering is correct
+  LFC_DE_module_genes_ordered <- LFC_DE_module_genes[order(match(LFC_DE_module_genes[, 1], rownames(DE_genes_counts))), ]
+
+  ## make an annotation for the adj. p-val + LFC
+  ## generate the color palettes
+  LFC_col <- colorRamp2(c(-4, 0, 4), c("#00b7d7", "#d5d3d3", "#f83479"))
+  LFC_anno <- rowAnnotation(LFC = LFC_DE_module_genes_ordered[, 3],
+                            col = list(LFC = LFC_col))
+  ## log2 scaled
+  DE_genes_counts_log <- log2((DE_genes_counts + 1))
+
+  sig_genes_scaled <- t(scale(t(DE_genes_counts_log)))
+  filename <- paste0(Sloan_input, "Heatmap_", i, "_Module_genes_log2_scaled_pearson.pdf")
+  pdf(file = filename)
+  print(Heatmap(sig_genes_scaled,
+        name = "z-score", clustering_distance_rows = "pearson",
+        column_title = paste0("log2 counts of all DE ", i, " Module Genes WGCNA, scaled"),
+        col = heatmap_pal, left_annotation = LFC_anno, cluster_columns = FALSE,
+        row_names_gp = gpar(fontsize = 6)))
+  print(Heatmap(sig_genes_scaled,
+        name = "z-score", clustering_distance_rows = "pearson",
+        column_title = paste0("log2 counts of all DE ", i, " Module Genes WGCNA, scaled"),
+        col = heatmap_pal, left_annotation = LFC_anno,
+        row_names_gp = gpar(fontsize = 6)))
+  dev.off()
+}
+
+## redo the Early Middle with a different font size
+DE_genes <- DE_module_genes[which(DE_module_genes$Maturation_module == "Early_Middle"), ]
+DE_genes_counts <- Sloan_norm_counts[rownames(Sloan_norm_counts) %in% DE_genes[, 1], ]
+
+## obtain the data for the row annotations
+LFC_DE_module_genes <- RNA_sig_genes[(RNA_sig_genes[, 1] %in% DE_genes[, 1]), ]
+
+## make sure the ordering is correct
+LFC_DE_module_genes_ordered <- LFC_DE_module_genes[order(match(LFC_DE_module_genes[, 1], rownames(DE_genes_counts))), ]
+
+## make an annotation for the adj. p-val + LFC
+## generate the color palettes
+LFC_col <- colorRamp2(c(-4, 0, 4), c("#00b7d7", "#d5d3d3", "#f83479"))
+LFC_anno <- rowAnnotation(LFC = LFC_DE_module_genes_ordered[, 3],
+                          col = list(LFC = LFC_col))
+
+## log2 scaled
+DE_genes_counts_log <- log2((DE_genes_counts + 1))
+
+sig_genes_scaled <- t(scale(t(DE_genes_counts_log)))
+pdf(file = paste0(Sloan_input, "Heatmap_Early_Middle_Module_genes_log2_scaled_pearson.pdf"))
+Heatmap(sig_genes_scaled,
+        name = "z-score", clustering_distance_rows = "pearson",
+        column_title = "log2 counts of all DE Early Middle Module Genes WGCNA, scaled",
+        col = heatmap_pal, left_annotation = LFC_anno, cluster_columns = FALSE,
+        row_names_gp = gpar(fontsize = 4))
+Heatmap(sig_genes_scaled,
+        name = "z-score", clustering_distance_rows = "pearson",
+        column_title = "log2 counts of all DE Early Middle Module Genes WGCNA, scaled",
+        col = heatmap_pal, left_annotation = LFC_anno,
+        row_names_gp = gpar(fontsize = 4))
+dev.off()
+
+## make a lineplot for the 10 lncRNAs that are part of the modules
+DE_lncRNAs_in_modules <- DE_module_genes[DE_module_genes[, 1] %in% DE_lncRNAs_all == TRUE, 1]
+
+## make a violin plot for the following: NEAT1, CRNDE, LINC01088
+to_be_plotted <- c("NEAT1")
+
+DE_module_lncRNAs_Sloan <- Sloan_norm_counts[rownames(Sloan_norm_counts) %in% to_be_plotted, ]
+DE_module_lncRNAs_Sloan$Gene <- rownames(DE_module_lncRNAs_Sloan)
+
+long_df <- pivot_longer(DE_module_lncRNAs_Sloan, cols = -Gene)
+## transform to log2
+long_df$value <- log2((long_df$value + 1))
+## create a new variable with the timepoint and cell line
+long_df <- long_df %>%
+  mutate(Time = sub(".*\\.(d\\d+)", "\\1", name),
+         Cellline = sub("(C\\d+)\\..*", "\\1", name))
+long_df$Time <- factor(long_df$Time, levels = unique(long_df$Time))
+
+## loop through the genes
+for (i in to_be_plotted){
+  df <- long_df[long_df$Gene == i, ]
+  filename <- paste0(Sloan_input, i, "_violinplot.pdf")
+  pdf(file = filename)
+  print(ggplot(df, aes(x = Time, y = value)) +
+    geom_violin() +
+    geom_jitter(aes(color = Cellline), width = 0.2, size = 2) +
+    theme_classic() +
+    labs(title = paste0(i, " log2 expression over time"),
+         x = "Time Point",
+         y = "Log2 Expression Value"))
+  dev.off()
+  filename_2 <- paste0(Sloan_input, i, "_lineplot.pdf")
+  pdf(file = filename_2)
+  print(ggplot(df, aes(x = Time, y = value, group = Cellline, color = Cellline)) +
+  geom_line() +
+  ylim(0, 15) +
+  geom_point(size = 2) +  # Points at each time point
+  theme_classic() +
+  labs(title = paste0(i, " log2 expression over time"),
+       x = "Time Point",
+       y = "Expression Value"))
+  dev.off()
+}
+```
+
+## check the overlap of the Sojka et al with TCGA_unique genes
+```{r}
+TCGA_unique <- read.delim(paste0(lncRNA_input, "TCGA_unique.txt"), sep = "\t")
+
+length(intersect(TableS2_Sloan[, 1], TCGA_unique$SYMBOL))
+## 251 out of 789 are module genes
+TCGA_unique_module_genes <- TCGA_unique[TCGA_unique[, 8] %in% TableS2_Sloan[, 1], ]
+
+## check the distribution to late, early, etc.
+TCGA_genes_modules <- TableS2_Sloan[TableS2_Sloan[, 1] %in% TCGA_unique[, 8], ]
+table(TCGA_genes_modules$Maturation_module)
+## Early Early_Middle  Late  Middle  Middle_Late
+##  130   26           31    32      32
+
+## check up and down separately
+TCGA_unique_module_genes_up <- TCGA_unique_module_genes[which(TCGA_unique_module_genes$log2FoldChange > 0), ]
+TCGA_unique_module_genes_down <- TCGA_unique_module_genes[which(TCGA_unique_module_genes$log2FoldChange < 0), ]
+
+## run different enrichments for those (all, up/down separately)
+dbs <- c("GO_Biological_Process_2023", "Reactome_2022")
+
+if (websiteLive) {
+    TCGA_unique_enriched <- enrichr(TCGA_unique_module_genes[, 8], dbs)
+    TCGA_up_enriched <- enrichr(TCGA_unique_module_genes_up[, 8], dbs)
+    TCGA_down_enriched <- enrichr(TCGA_unique_module_genes_down[, 8], dbs)
+}
+
+## write to file
+write.xlsx(TCGA_unique_enriched[["GO_Biological_Process_2023"]],
+           paste0(output_dir, "TCGA_unique_module_genes_BP_process_DE.xlsx"))
+write.xlsx(TCGA_unique_enriched[["Reactome_2022"]],
+           paste0(output_dir, "TCGA_unique_module_genes_pathways_DE.xlsx"))
+
+write.xlsx(TCGA_up_enriched[["GO_Biological_Process_2023"]],
+           paste0(output_dir, "TCGA_unique_up_module_genes_GO_BP_process_DE.xlsx"))
+write.xlsx(TCGA_up_enriched[["Reactome_2022"]],
+           paste0(output_dir, "TCGA_unique_up_module_genes_pathways_DE.xlsx"))
+
+write.xlsx(TCGA_down_enriched[["GO_Biological_Process_2023"]],
+           paste0(output_dir, "TCGA_unique_down_module_genes_GO_BP_process_DE.xlsx"))
+write.xlsx(TCGA_down_enriched[["Reactome_2022"]],
+           paste0(output_dir, "TCGA_unique_down_module_genes_pathways_DE.xlsx"))
+
+TCGA_genes_modules_up <- TableS2_Sloan[TableS2_Sloan[, 1] %in% TCGA_unique_module_genes_up[, 8], ]
+table(TCGA_genes_modules_up$Maturation_module)
+## Early Early_Middle  Late  Middle  Middle_Late
+##  37   16            3     19      8
+
+TCGA_genes_modules_down <- TableS2_Sloan[TableS2_Sloan[, 1] %in% TCGA_unique_module_genes_down[, 8], ]
+table(TCGA_genes_modules_down$Maturation_module)
+## Early Early_Middle  Late  Middle  Middle_Late
+##  93   10            28     13     24
+
+## do the same distribution like for TG
+Early_TCGA <- TCGA_genes_modules[which(TCGA_genes_modules$Maturation_module == "Early"), ]
+Early_TCGA_LFC <- TCGA_unique[TCGA_unique[, 8] %in% Early_TCGA$Gene, ]
+## check how they are annotated according to Reactome
+TCGA_unique_annotation_df$Gene <- rownames(TCGA_unique_annotation_df)
+Reactome_Early_TCGA <- merge(Early_TCGA, TCGA_unique_annotation_df,
+                             by = "Gene", all.x = TRUE)
+## remove the Maturation_Module and Gene name
+Reactome_Early_TCGA <- Reactome_Early_TCGA[, -(2)]
+rownames(Reactome_Early_TCGA) <- Reactome_Early_TCGA$Gene
+Reactome_Early_TCGA <- Reactome_Early_TCGA[, -(1)]
+## also separate into up- and downregulated
+up_genes <- Early_TCGA_LFC[which(Early_TCGA_LFC$log2FoldChange > 0), 8]
+Reactome_Early_TCGA_up <- Reactome_Early_TCGA[up_genes, ]
+down_genes <- Early_TCGA_LFC[which(Early_TCGA_LFC$log2FoldChange < 0), 8]
+Reactome_Early_TCGA_down <- Reactome_Early_TCGA[down_genes, ]
+## check how they distribute to categories
+annotations <- data.frame(
+  Count_Genes = colSums(Reactome_Early_TCGA == 1, na.rm = TRUE),  # Count genes
+  Count_NAs = colSums(is.na(Reactome_Early_TCGA)),  # Count NAs
+  Count_up = colSums(Reactome_Early_TCGA_up == 1, na.rm = TRUE),  # Count genes
+  Count_NAs = colSums(is.na(Reactome_Early_TCGA_up)),  # Count NAs
+  Count_down = colSums(Reactome_Early_TCGA_down == 1, na.rm = TRUE),  # Count genes
+  Count_NAs = colSums(is.na(Reactome_Early_TCGA_down))  # Count NAs
+)
+
+## write to file
+write.csv(t(annotations), paste0(lncRNA_input, "TCGA_Early_Reactome_annotation.csv"),
+          quote = FALSE)
+write.csv(Reactome_Early_TCGA, paste0(lncRNA_input, "TCGA_Early_Reactome_annotation_genes.csv"),
+          quote = FALSE)
+
+Early_Middle_TCGA <- TCGA_genes_modules[which(TCGA_genes_modules$Maturation_module == "Early_Middle"), ]
+Early_Middle_TCGA_LFC <- TCGA_unique[TCGA_unique[, 8] %in% Early_Middle_TCGA$Gene, ]
+## check how they are annotated according to Reactome
+Reactome_Early_Middle_TCGA <- merge(Early_Middle_TCGA, TCGA_unique_annotation_df,
+                              by = "Gene", all.x = TRUE)
+## remove the Maturation_Module and Gene name
+Reactome_Early_Middle_TCGA <- Reactome_Early_Middle_TCGA[, -(2)]
+rownames(Reactome_Early_Middle_TCGA) <- Reactome_Early_Middle_TCGA$Gene
+Reactome_Early_Middle_TCGA <- Reactome_Early_Middle_TCGA[, -(1)]
+## also separate into up- and downregulated
+up_genes <- Early_Middle_TCGA_LFC[which(Early_Middle_TCGA_LFC$log2FoldChange > 0), 8]
+Reactome_Early_Middle_TCGA_up <- Reactome_Early_Middle_TCGA[up_genes, ]
+down_genes <- Early_Middle_TCGA_LFC[which(Early_Middle_TCGA_LFC$log2FoldChange < 0), 8]
+Reactome_Early_Middle_TCGA_down <- Reactome_Early_Middle_TCGA[down_genes, ]
+## check how they distribute to categories
+annotations <- data.frame(
+  Count_Genes = colSums(Reactome_Early_Middle_TCGA == 1, na.rm = TRUE),  # Count genes
+  Count_NAs = colSums(is.na(Reactome_Early_Middle_TCGA)),  # Count NAs
+  Count_up = colSums(Reactome_Early_Middle_TCGA_up == 1, na.rm = TRUE),  # Count genes
+  Count_NAs = colSums(is.na(Reactome_Early_Middle_TCGA_up)),  # Count NAs
+  Count_down = colSums(Reactome_Early_Middle_TCGA_down == 1, na.rm = TRUE),  # Count genes
+  Count_NAs = colSums(is.na(Reactome_Early_Middle_TCGA_down))  # Count NAs
+)
+
+## write to file
+write.csv(t(annotations), paste0(lncRNA_input, "TCGA_Early_Middle_Reactome_annotation.csv"),
+          quote = FALSE)
+write.csv(Reactome_Early_Middle_TCGA, paste0(lncRNA_input, "TCGA_Early_Middle_Reactome_annotation_genes.csv"),
+          quote = FALSE)
+
+Middle_TCGA <- TCGA_genes_modules[which(TCGA_genes_modules$Maturation_module == "Middle"), ]
+Middle_TCGA_LFC <- TCGA_unique[TCGA_unique[, 8] %in% Middle_TCGA$Gene, ]
+## check how they are annotated according to Reactome
+Reactome_Middle_TCGA <- merge(Middle_TCGA, TCGA_unique_annotation_df,
+                              by = "Gene", all.x = TRUE)
+## remove the Maturation_Module and Gene name
+Reactome_Middle_TCGA <- Reactome_Middle_TCGA[, -(2)]
+rownames(Reactome_Middle_TCGA) <- Reactome_Middle_TCGA$Gene
+Reactome_Middle_TCGA <- Reactome_Middle_TCGA[, -(1)]
+## also separate into up- and downregulated
+up_genes <- Middle_TCGA_LFC[which(Middle_TCGA_LFC$log2FoldChange > 0), 8]
+Reactome_Middle_TCGA_up <- Reactome_Middle_TCGA[up_genes, ]
+down_genes <- Middle_TCGA_LFC[which(Middle_TCGA_LFC$log2FoldChange < 0), 8]
+Reactome_Middle_TCGA_down <- Reactome_Middle_TCGA[down_genes, ]
+## check how they distribute to categories
+annotations <- data.frame(
+  Count_Genes = colSums(Reactome_Middle_TCGA == 1, na.rm = TRUE),  # Count genes
+  Count_NAs = colSums(is.na(Reactome_Middle_TCGA)),  # Count NAs
+  Count_up = colSums(Reactome_Middle_TCGA_up == 1, na.rm = TRUE),  # Count genes
+  Count_NAs = colSums(is.na(Reactome_Middle_TCGA_up)),  # Count NAs
+  Count_down = colSums(Reactome_Middle_TCGA_down == 1, na.rm = TRUE),  # Count genes
+  Count_NAs = colSums(is.na(Reactome_Middle_TCGA_down))  # Count NAs
+)
+
+## write to file
+write.csv(t(annotations), paste0(lncRNA_input, "TCGA_Middle_Reactome_annotation.csv"),
+          quote = FALSE)
+write.csv(Reactome_Middle_TCGA, paste0(lncRNA_input, "TCGA_Middle_Reactome_annotation_genes.csv"),
+          quote = FALSE)
+
+Middle_Late_TCGA <- TCGA_genes_modules[which(TCGA_genes_modules$Maturation_module == "Middle_Late"), ]
+Middle_Late_TCGA_LFC <- TCGA_unique[TCGA_unique[, 8] %in% Middle_Late_TCGA$Gene, ]
+## check how they are annotated according to Reactome
+Reactome_Middle_Late_TCGA <- merge(Middle_Late_TCGA, TCGA_unique_annotation_df,
+                                   by = "Gene", all.x = TRUE)
+## remove the Maturation_Module and Gene name
+Reactome_Middle_Late_TCGA <- Reactome_Middle_Late_TCGA[, -(2)]
+rownames(Reactome_Middle_Late_TCGA) <- Reactome_Middle_Late_TCGA$Gene
+Reactome_Middle_Late_TCGA <- Reactome_Middle_Late_TCGA[, -(1)]
+## also separate into up- and downregulated
+up_genes <- Middle_Late_TCGA_LFC[which(Middle_Late_TCGA_LFC$log2FoldChange > 0), 8]
+Reactome_Middle_Late_TCGA_up <- Reactome_Middle_Late_TCGA[up_genes, ]
+down_genes <- Middle_Late_TCGA_LFC[which(Middle_Late_TCGA_LFC$log2FoldChange < 0), 8]
+Reactome_Middle_Late_TCGA_down <- Reactome_Middle_Late_TCGA[down_genes, ]
+## check how they distribute to categories
+annotations <- data.frame(
+  Count_Genes = colSums(Reactome_Middle_Late_TCGA == 1, na.rm = TRUE),  # Count genes
+  Count_NAs = colSums(is.na(Reactome_Middle_Late_TCGA)),  # Count NAs
+  Count_up = colSums(Reactome_Middle_Late_TCGA_up == 1, na.rm = TRUE),  # Count genes
+  Count_NAs = colSums(is.na(Reactome_Middle_Late_TCGA_up)),  # Count NAs
+  Count_down = colSums(Reactome_Middle_Late_TCGA_down == 1, na.rm = TRUE),  # Count genes
+  Count_NAs = colSums(is.na(Reactome_Middle_Late_TCGA_down))  # Count NAs
+)
+
+## write to file
+write.csv(t(annotations), paste0(lncRNA_input, "TCGA_Middle_Late_Reactome_annotation.csv"),
+          quote = FALSE)
+write.csv(Reactome_Middle_Late_TCGA, paste0(lncRNA_input, "TCGA_Middle_Late_Reactome_annotation_genes.csv"),
+          quote = FALSE)
+
+Late_TCGA <- TCGA_genes_modules[which(TCGA_genes_modules$Maturation_module == "Late"), ]
+Late_TCGA_LFC <- TCGA_unique[TCGA_unique[, 8] %in% Late_TCGA$Gene, ]
+## check how they are annotated according to Reactome
+Reactome_Late_TCGA <- merge(Late_TCGA, TCGA_unique_annotation_df,
+                            by = "Gene", all.x = TRUE)
+## remove the Maturation_Module and Gene name
+Reactome_Late_TCGA <- Reactome_Late_TCGA[, -(2)]
+rownames(Reactome_Late_TCGA) <- Reactome_Late_TCGA$Gene
+Reactome_Late_TCGA <- Reactome_Late_TCGA[, -(1)]
+## also separate into up- and downregulated
+up_genes <- Late_TCGA_LFC[which(Late_TCGA_LFC$log2FoldChange > 0), 8]
+Reactome_Late_TCGA_up <- Reactome_Late_TCGA[up_genes, ]
+down_genes <- Late_TCGA_LFC[which(Late_TCGA_LFC$log2FoldChange < 0), 8]
+Reactome_Late_TCGA_down <- Reactome_Late_TCGA[down_genes, ]
+## check how they distribute to categories
+annotations <- data.frame(
+  Count_Genes = colSums(Reactome_Late_TCGA == 1, na.rm = TRUE),  # Count genes
+  Count_NAs = colSums(is.na(Reactome_Late_TCGA)),  # Count NAs
+  Count_up = colSums(Reactome_Late_TCGA_up == 1, na.rm = TRUE),  # genes
+  Count_NAs = colSums(is.na(Reactome_Late_TCGA_up)),  # NAs
+  Count_down = colSums(Reactome_Late_TCGA_down == 1, na.rm = TRUE),  # genes
+  Count_NAs = colSums(is.na(Reactome_Late_TCGA_down))  # NAs
+)
+
+## write to file
+write.csv(t(annotations), paste0(lncRNA_input, "TCGA_Late_Reactome_annotation.csv"),
+          quote = FALSE)
+write.csv(Reactome_Late_TCGA, paste0(lncRNA_input, "TCGA_Late_Reactome_annotation_genes.csv"),
+          quote = FALSE)
+
+## plot the genes in Sojka
+Sloan_norm_counts <- read.xlsx(paste0(Sloan_input, "Sloan_norm_counts.xlsx"),
+                               rowNames = TRUE)
+
+## make a loop for the 5 different modules
+heatmap_pal <- colorRamp2(c(-4, 0, 4), c("#3C5488B2", "#d5d3d3", "#E64B35B2"))
+
+for (i in unique(TCGA_genes_modules$Maturation_module)) {
+  DE_genes <- TCGA_genes_modules[which(TCGA_genes_modules$Maturation_module == i), ]
+  DE_genes_counts <- Sloan_norm_counts[rownames(Sloan_norm_counts) %in% DE_genes[, 1], ]
+
+  ## obtain the data for LFC as the row annotations
+  LFC_DE_module_genes <- TCGA_unique[(TCGA_unique[, 8] %in% DE_genes[, 1]), ]
+  ## make sure the ordering is correct
+  LFC_DE_module_genes_ordered <- LFC_DE_module_genes[order(match(LFC_DE_module_genes[, 1], rownames(DE_genes_counts))), ]
+
+  ## make an annotation for the adj. p-val + LFC
+  ## generate the color palettes
+  LFC_col <- colorRamp2(c(-4, 0, 4), c("#00b7d7", "#d5d3d3", "#f83479"))
+  LFC_anno <- rowAnnotation(LFC = LFC_DE_module_genes_ordered[, 3],
+                            col = list(LFC = LFC_col))
+  ## log2 scaled
+  DE_genes_counts_log <- log2((DE_genes_counts + 1))
+
+  sig_genes_scaled <- t(scale(t(DE_genes_counts_log)))
+  filename <- paste0(Sloan_input, "Heatmap_", i, "_TCGA_unique_Module_genes_log2_scaled_pearson.pdf")
+  pdf(file = filename)
+  print(Heatmap(sig_genes_scaled,
+        name = "z-score", clustering_distance_rows = "pearson",
+        column_title = paste0("log2 counts of all DE ", i, "_TCGA Module Genes WGCNA, scaled"),
+        col = heatmap_pal, left_annotation = LFC_anno, cluster_columns = FALSE,
+        row_names_gp = gpar(fontsize = 4)))
+  print(Heatmap(sig_genes_scaled,
+        name = "z-score", clustering_distance_rows = "pearson",
+        column_title = paste0("log2 counts of all DE ", i, "_TCGA Module Genes WGCNA, scaled"),
+        col = heatmap_pal, left_annotation = LFC_anno,
+        row_names_gp = gpar(fontsize = 4)))
+  dev.off()
+}
+
+## plot the TCGA_unique Sojka genes in TG data
+colnames(RNA_counts) <- c("TG02a", "TG02b", "TG03a", "TG03b",
+                          "TG04a", "TG04b", "TG05a", "TG05b",
+                          "TG01a", "TG01b", "TG06a", "TG06b")
+RNA_counts <- RNA_counts[, order(colnames(RNA_counts))]
+
+for (i in unique(TCGA_genes_modules$Maturation_module)) {
+  DE_genes <- TCGA_genes_modules[which(TCGA_genes_modules$Maturation_module == i), ]
+  DE_genes_counts <- RNA_counts[rownames(RNA_counts) %in% DE_genes[, 1], ]
+
+  ## obtain the data for LFC as the row annotations
+  LFC_DE_module_genes <- TCGA_unique[(TCGA_unique[, 8] %in% DE_genes[, 1]), ]
+  ## make sure the ordering is correct
+  LFC_DE_module_genes_ordered <- LFC_DE_module_genes[order(match(LFC_DE_module_genes[, 1], rownames(DE_genes_counts))), ]
+
+  ## make an annotation for the adj. p-val + LFC
+  ## generate the color palettes
+  LFC_col <- colorRamp2(c(-4, 0, 4), c("#00b7d7", "#d5d3d3", "#f83479"))
+  LFC_anno <- rowAnnotation(LFC = LFC_DE_module_genes_ordered[, 3],
+                            col = list(LFC = LFC_col))
+  ## log2 scaled
+  DE_genes_counts_log <- log2((DE_genes_counts + 1))
+
+  sig_genes_scaled <- t(scale(t(DE_genes_counts_log)))
+  filename <- paste0(Sloan_input, "Heatmap_", i, "_TCGA_unique_Sojka_genes_in_TG.pdf")
+  pdf(file = filename)
+  print(Heatmap(sig_genes_scaled,
+        name = "z-score", clustering_distance_rows = "pearson",
+        column_title = paste0("log2 counts of all DE ", i, "_TCGA Module Genes WGCNA, scaled"),
+        col = heatmap_pal, left_annotation = LFC_anno, cluster_columns = FALSE,
+        row_names_gp = gpar(fontsize = 4)))
+  print(Heatmap(sig_genes_scaled,
+        name = "z-score", clustering_distance_rows = "pearson",
+        column_title = paste0("log2 counts of all DE ", i, "_TCGA Module Genes WGCNA, scaled"),
+        col = heatmap_pal, left_annotation = LFC_anno,
+        row_names_gp = gpar(fontsize = 4)))
+  dev.off()
+}
+
+## run the enrichments for individual modules
+if (websiteLive) {
+    TCGA_Early_enriched <- enrichr(Early_TCGA[, 1], dbs)
+    TCGA_Early_Middle_enriched <- enrichr(Early_Middle_TCGA[, 1], dbs)
+    TCGA_Middle_Late_enriched <- enrichr(Middle_Late_TCGA[, 1], dbs)
+}
+
+## write to file
+write.xlsx(TCGA_Early_enriched[["GO_Biological_Process_2023"]],
+           paste0(output_dir, "TCGA_unique_Early_BP_process_DE.xlsx"))
+write.xlsx(TCGA_Early_enriched[["Reactome_2022"]],
+           paste0(output_dir, "TCGA_unique_Early_pathways_DE.xlsx"))
+
+write.xlsx(TCGA_Early_Middle_enriched[["GO_Biological_Process_2023"]],
+           paste0(output_dir, "TCGA_unique_Early_Middle_GO_BP_process_DE.xlsx"))
+write.xlsx(TCGA_Early_Middle_enriched[["Reactome_2022"]],
+           paste0(output_dir, "TCGA_unique_up_Early_Middle_pathways_DE.xlsx"))
+
+write.xlsx(TCGA_Middle_Late_enriched[["GO_Biological_Process_2023"]],
+           paste0(output_dir, "TCGA_unique_Middle_Late_GO_BP_process_DE.xlsx"))
+write.xlsx(TCGA_Middle_Late_enriched[["Reactome_2022"]],
+           paste0(output_dir, "TCGA_unique_Middle_Late_pathways_DE.xlsx"))
+
+```
+
+## repeat for GLASS_unique
+```{r}
+GLASS_unique_up <- read.delim(paste0(lncRNA_input, "GLASS_uniquely_up_protein_coding.txt"),
+                              header = FALSE)
+
+GLASS_unique_down <- read.delim(paste0(lncRNA_input, "GLASS_uniquely_down_protein_coding.txt"),
+                                header = FALSE)
+
+GLASS_unique_up_module_genes <- TableS2_Sloan[TableS2_Sloan[, 1] %in% GLASS_unique_up[, 1], ]
+table(GLASS_unique_up_module_genes[, 2])
+# Early Early_Middle   Middle  Middle_Late 
+# 15     15            8        4
+
+GLASS_unique_down_module_genes <- TableS2_Sloan[TableS2_Sloan[, 1] %in% GLASS_unique_down[, 1], ]
+table(GLASS_unique_down_module_genes[, 2])
+#Early Early_Middle Late Middle  Middle_Late
+# 13   1            11   4        30
+```
+
+## Volcano plots
+709 genes are considered significant, construct volcano plot for them
+```{r}
+## considering all genes
+## colouring the genes by molecule type
+RNA_results$DE <- "not DE"
+RNA_results$DE[RNA_results$log2FoldChange > 1 & RNA_results$padj < 0.05] <- "up"
+RNA_results$DE[RNA_results$log2FoldChange < -1 & RNA_results$padj < 0.05] <- "down"
+
+## manually change the status for the lncRNAs with padj. 0.1
+lncRNAs_changed_p_val_up <- c("DUXAP8")
+lncRNAs_changed_p_val_down <- c("PWAR1", "FAM155A-IT1", "PCDH9-AS3",
+                                "FAM167A-AS1", "RNF219-AS1", "WDFY3-AS2")
+changed_lncRNA_indices_up <- which(RNA_results[, 1] %in% lncRNAs_changed_p_val_up)
+changed_lncRNA_indices_down <- which(RNA_results[, 1] %in% lncRNAs_changed_p_val_down)
+RNA_results[changed_lncRNA_indices_up, 8] <- "up"
+RNA_results[changed_lncRNA_indices_down, 8] <- "down"
+
+volcano_colors <- gene_pal
+names(volcano_colors) <- c("down", "not DE", "up")
+
+## also add the type for the lncRNAs
+RNA_results$type <- "mRNA"
+## add one distinction for lncRNAs
+lncRNA_indices <- which(RNA_results[, 1] %in% all_lncRNAs_DESeq2[, 1])
+RNA_results[lncRNA_indices, 9] <- "lncRNA"
+
+## add the labels for the 10 most significant genes
+top_10_DE <- RNA_results[1:10, ]
+
+RNA_results$label <- NA
+RNA_results[1:10, ]$label <- RNA_results[1:10, ]$genes
+
+## repeating the volcano plot with both miRNA and mRNA counts
+miRNA_results <- read.delim(paste0(miRNA_input, "miRNAs_DESeq2_only_R.csv"),
+                            header = TRUE, sep = ",")
+## remove all ones with #N/A as padj
+miRNA_results <- miRNA_results[-(which(miRNA_results$padj == "#N/A")), ]
+## make sure the column is numeric
+miRNA_results$padj <- as.numeric(miRNA_results$padj)
+## add the "DE" column separately as different cutoffs were set
+miRNA_results$DE <- "not DE"
+miRNA_results$DE[miRNA_results$log2FoldChange > 1 & miRNA_results$padj < 0.1] <- "up"
+miRNA_results$DE[miRNA_results$log2FoldChange < -1 & miRNA_results$padj < 0.1] <- "down"
+colnames(miRNA_results)[1] <- "genes"
+
+## label the top 10 DE miRNAs
+top_10_DE_miRNA <- miRNA_results[order(abs(as.numeric(miRNA_results[, 7])), decreasing = FALSE), ]
+
+miRNA_results$label <- NA
+miRNA_results[which(miRNA_results[, 1] %in% top_10_DE_miRNA[1:10, 1]), ]$label <- miRNA_results[which(miRNA_results[, 1] %in% top_10_DE_miRNA[1:10, 1]), ]$genes
+
+## add one column to distinguish between miRNA and gene
+miRNA_results$type <- "miRNA"
+
+all_transcripts <- rbind(RNA_results, miRNA_results)
+## make sure the padj is numeric
+all_transcripts$padj <- as.numeric(all_transcripts$padj)
+
+## make one version with a different color for each type instead of the shape
+type_color <- c("#d8bad7", "#495f8b", "#539753")
+names(type_color) <- c("mRNA", "lncRNA", "miRNA")
+
+all_transcripts$label <- NA
+all_transcripts[1:10, ]$label <- RNA_results[1:10, ]$genes
+
+miRNA_indices <- which(all_transcripts$type == "miRNA")
+all_transcripts[miRNA_indices[1:5], ]$label <- all_transcripts[miRNA_indices[1:5], ]$genes
+
+lncRNA_indices <- which(all_transcripts$type == "lncRNA")
+all_transcripts[lncRNA_indices[1:5], ]$label <- all_transcripts[lncRNA_indices[1:5], ]$genes
+
+## have a separate color for not DE?
+threshold_line <- -log10(0.05)
+
+pdf(paste0(output_dir, "miRNA_and_RNA_volcano_plot_colors.pdf"),
+    width = 7, height = 7)
+    ggplot(data = all_transcripts, aes(x = log2FoldChange, y = -log10(padj),
+           col = type, label = label)) +
+  geom_point(size = 1.5) +
+  theme_classic() +
+  theme(text = element_text(family = "sans")) +
+  scale_colour_manual(values = type_color) +
+  geom_hline(yintercept = threshold_line, color = "black", size = 0.5) +
+  geom_vline(xintercept = c(-1, 1), color = "black", size = 0.5) +
+  theme(legend.position = "none") +
+  geom_text_repel()
+  ## with legend
+  ggplot(data = all_transcripts, aes(x = log2FoldChange, y = -log10(padj),
+       col = type, label = label)) +
+  geom_point(size = 1.5) +
+  theme_classic() +
+  theme(text = element_text(family = "sans")) +
+  scale_colour_manual(values = type_color) +
+  geom_hline(yintercept = threshold_line, color = "black", size = 0.5) +
+  geom_vline(xintercept = c(-1, 1), color = "black", size = 0.5) +
+  geom_text_repel()
+dev.off()
+```
+
+## make a function for the PCA plotting
+```{r}
+## NOTE: shape is hardcoded for therapy!
+plot_PCA <- function(PCA_input = NULL, label = NULL,
+                     color_variable = NULL, size_variable = NULL,
+                     shape_variable = NULL,
+                     filename = paste0(output_dir, "PCA"),
+                     color_palette = NULL,
+                     size_min_max = c(0, 150),
+                     size_breaks = c(0, 25, 50, 100, 150),
+                     size_title = "Time to progression in month") {
+
+  pca_res <- prcomp(PCA_input, scale. = TRUE)
+
+   ## preparation for ggplot
+   df <- cbind(pca_res$x[, 1:2], shape_variable, size_variable) %>% as.data.frame()
+   df$PC1 <- as.numeric(df$PC1) / (pca_res$sdev[1] * sqrt(nrow(PCA_input)))
+   df$PC2 <- as.numeric(df$PC2) / (pca_res$sdev[2] * sqrt(nrow(PCA_input)))
+   df$label <- label
+   df$shape_variable <- as.factor(shape_variable)
+   df[, 4] <- as.numeric(df[, 4])
+
+   ## calculate and plot the variance
+   eig_val <- get_eigenvalue(pca_res)
+
+   #ggplot method
+   percentage <- paste0(colnames(df)[1:2], "(", as.character(round(eig_val[1:2, 2])), "%)")
+   shapes <- c(20, 17, 15)
+   names(shapes) <- c("none", "radiation", "combination")
+
+   pdf(file = filename,
+       width = 7, height = 7)
+  ## plot without the legend
+  print(ggplot(data = df, aes(PC1, PC2, col = grade, label = label)) +
+         geom_point(aes(shape = shape_variable, size = size_variable)) +
+         scale_shape_manual(values = shapes) +
+         scale_colour_manual(values = color_palette) +
+         theme_classic() +
+         geom_text_repel() +
+         theme(text = element_text(family = "sans")) +
+         labs(shape = "Adjuvant therapy before surgery",
+              size = size_title) +
+         scale_size_binned_area(
+              limits = size_min_max,
+              breaks = size_breaks) +
+         xlab(percentage[1]) + ylab(percentage[2]) +
+         theme(legend.position = "none")) ## remove the legend for a square size
+  ## plot again with the legend
+  print(ggplot(data = df, aes(PC1, PC2, col = grade, label = label)) +
+         geom_point(aes(shape = shape_variable, size = size_variable)) +
+         scale_shape_manual(values = shapes) +
+         scale_colour_manual(values = color_palette) +
+         geom_text_repel() +
+         theme_classic() +
+         theme(text = element_text(family = "sans")) +
+         labs(shape = "Adjuvant therapy before surgery",
+              size = size_title) +
+         scale_size_binned_area(
+              limits = size_min_max,
+              breaks = size_breaks) +
+         xlab(percentage[1]) + ylab(percentage[2]))
+  print(fviz_eig(pca_res, addlabels = TRUE, ylim = c(0, 40), barfill = "grey",
+        barcolor = "grey", ggtheme = theme_classic(), bar_width = 0.7))
+  dev.off()
+                     }
+```
+
+## plotting PCAs
+```{r}
+## plotting the PCA (based on the normalised counts)
+## see if scaling twice is making a difference
+
+rownames(RNA_counts) <- RNA_counts[, 1]
+RNA_counts <- RNA_counts[, (- 1)]
+RNA_counts <- RNA_counts[-(which(rowSums(RNA_counts) == 0)), ]
+
+rownames_for_PCA <- c("TG02a", "TG02b", "TG03a", "TG03b", "TG04a", "TG04b",
+                      "TG05a", "TG05b", "TG01a", "TG01b", "TG06a", "TG06b")
+
+plot_PCA(t(RNA_counts), label = rownames_for_PCA,
+         color_variable = grade, size_variable = time,
+         shape_variable = therapy,
+         filename = paste0(output_dir, "PCA_mRNA_scaled.pdf"),
+         color_palette = grade_pal)
+
+plot_PCA(t(RNA_counts_filtered), label = rownames_for_PCA,
+         color_variable = grade, size_variable = time,
+         shape_variable = therapy,
+         filename = paste0(output_dir, "PCA_mRNA_filtered_scaled.pdf"),
+         color_palette = grade_pal)
+
+## instead of time, show the Ki67 proliferation index
+
+plot_PCA(t(RNA_counts_filtered), label = rownames_for_PCA,
+         color_variable = grade, size_variable = t(Ki67_RNA),
+         shape_variable = therapy,
+         filename = paste0(output_dir, "PCA_mRNA_filtered_Ki67.pdf"),
+         color_palette = grade_pal, size_min_max = c(0, 6500),
+         size_breaks = c(0, 500, 1000, 2000, 3000, 4000, 5000, 6000),
+         size_title = "Ki67 RNA-seq expression")
+
+## try the PCA for the log2 counts instead
+RNA_log2_filtered <- log2(RNA_counts_filtered + 1)
+
+plot_PCA(t(RNA_log2_filtered), label = rownames_for_PCA,
+         color_variable = grade, size_variable = t(Ki67_RNA),
+         shape_variable = therapy,
+         filename = paste0(output_dir, "PCA_mRNA_filtered_log2_scaled_Ki67.pdf"),
+         color_palette = grade_pal, size_min_max = c(0, 6500),
+         size_breaks = c(0, 500, 1000, 2000, 3000, 4000, 5000, 6000),
+         size_title = "Ki67 RNA-seq expression")
+
+
+## make PCAs based on the miRNAs
+rownames(miRNA_counts) <- miRNA_counts[, 1]
+miRNA_counts <- miRNA_counts[, (- 1)]
+
+pca_res_2 <- prcomp(filtered_miRNA_PCA_counts, scale. = TRUE)
+
+plot_PCA(t(miRNA_counts), label = rownames_for_PCA,
+         color_variable = grade, size_variable = time,
+         shape_variable = therapy,
+         filename = paste0(output_dir, "miRNA_PCA.pdf"),
+         color_palette = grade_pal)
+
+plot_PCA(t(miRNA_counts_filtered), label = rownames_for_PCA,
+         color_variable = grade, size_variable = time,
+         shape_variable = therapy,
+         filename = paste0(output_dir, "miRNA_PCA_filtered.pdf"),
+         color_palette = grade_pal)
+
+## instead of time, add the ratio of large to small RNAs
+plot_PCA(t(miRNA_counts_filtered), label = rownames_for_PCA,
+         color_variable = grade, size_variable = t(large_small_ratio),
+         shape_variable = therapy,
+         filename = paste0(output_dir, "PCA_miRNA_filtered_ratios.pdf"),
+         color_palette = grade_pal, size_min_max = c(0, 15),
+         size_breaks = c(2.5, 5, 7.5, 10),
+         size_title = "Ratio between large and small RNAs")
+
+## showing proliferation
+plot_PCA(t(miRNA_counts_filtered), label = rownames_for_PCA,
+         color_variable = grade, size_variable = t(Ki67_RNA),
+         shape_variable = therapy,
+         filename = paste0(output_dir, "PCA_miRNA_filtered_Ki67.pdf"),
+         color_palette = grade_pal, size_min_max = c(0, 6500),
+         size_breaks = c(0, 500, 1000, 2000, 3000, 4000, 5000, 6000),
+         size_title = "Ki67 RNA-seq expression")
+
+## trying the log2 scaling
+miRNA_log2_filtered <- log2(miRNA_counts_filtered + 1)
+
+plot_PCA(t(miRNA_log2_filtered), label = rownames_for_PCA,
+         color_variable = grade, size_variable = t(Ki67_RNA),
+         shape_variable = therapy,
+         filename = paste0(output_dir, "PCA_miRNA_filtered_log2_scaled_Ki67.pdf"),
+         color_palette = grade_pal, size_min_max = c(0, 6500),
+         size_breaks = c(0, 500, 1000, 2000, 3000, 4000, 5000, 6000),
+         size_title = "Ki67 RNA-seq expression")
+
+
+## repeat the PCA for normalised mRNA + miRNA counts
+combined_counts <- rbind(RNA_counts, miRNA_counts)
+
+plot_PCA(t(combined_counts), label = rownames_for_PCA,
+         color_variable = grade, size_variable = time,
+         shape_variable = therapy,
+         filename = paste0(output_dir, "combined_PCA.pdf"),
+         color_palette = grade_pal)
+
+plot_PCA(t(combined_counts_filtered), label = rownames_for_PCA,
+         color_variable = grade, size_variable = time,
+         shape_variable = therapy,
+         filename = paste0(output_dir, "combined_PCA_filtered.pdf"),
+         color_palette = grade_pal)
+
+plot_PCA(t(combined_counts_filtered), label = rownames_for_PCA,
+         color_variable = grade, size_variable = t(Ki67_RNA),
+         shape_variable = therapy,
+         filename = paste0(output_dir, "PCA_combined_filtered_Ki67.pdf"),
+         color_palette = grade_pal, size_min_max = c(0, 6500),
+         size_breaks = c(0, 500, 1000, 2000, 3000, 4000, 5000, 6000),
+         size_title = "Ki67 RNA-seq expression")
+```
+
+## try the PCA method DESeq2 uses
+(both all genes and top 500 variant genes on rlog transformed raw counts)
+```{r}
+## read in the raw data
+mRNA_counts_raw <- read.delim(paste0(output_dir, "RNA_seq_raw_counts.txt"))
+
+## filter for the genes without padj
+## add row- and colnames
+mRNA_counts_raw_filtered <- mRNA_counts_raw[mRNA_counts_raw[, 1] %in% RNA_results[, 1], ]
+rownames(mRNA_counts_raw_filtered) <- mRNA_counts_raw_filtered[, 1]
+mRNA_counts_raw_filtered <- mRNA_counts_raw_filtered[, (- 1)]
+colnames(mRNA_counts_raw_filtered) <- c("TG02a", "TG02b", "TG03a",
+                                        "TG03b", "TG04a", "TG04b",
+                                        "TG05a", "TG05b", "TG01a",
+                                        "TG01b", "TG06a", "TG06b")
+
+## repeat for miRNAs
+miRNA_counts_raw <- read.delim(paste0(miRNA_input, "raw_miRNA_counts.txt"))
+miRNA_counts_raw_filtered <- miRNA_counts_raw[miRNA_counts_raw[, 1] %in% miRNA_results_filtered[, 1], ]
+rownames(miRNA_counts_raw_filtered) <- miRNA_counts_raw_filtered[, 1]
+miRNA_counts_raw_filtered <- miRNA_counts_raw_filtered[, (- 1)]
+colnames(miRNA_counts_raw_filtered) <- colnames(miRNA_counts_raw_filtered)
+
+## rlog transformation
+rlog_mRNA <- rlog(as.matrix(mRNA_counts_raw_filtered))
+rlog_miRNA <- rlog(as.matrix(miRNA_counts_raw_filtered))
+## do the PCA
+
+plot_PCA(t(rlog_mRNA), label = rownames_for_PCA,
+         color_variable = grade, size_variable = t(Ki67_RNA),
+         shape_variable = therapy,
+         filename = paste0(output_dir, "mRNA_PCA_filtered_DESeq2_Ki67.pdf"),
+         color_palette = grade_pal, size_min_max = c(0, 6500),
+         size_breaks = c(0, 500, 1000, 2000, 3000, 4000, 5000, 6000),
+         size_title = "Ki67 RNA-seq expression")
+
+## filter for the 500 most variant genes
+rv <- rowVars(rlog_mRNA)
+
+# select the ntop genes by variance
+select <- order(rv, decreasing = TRUE)[seq_len(min(500, length(rv)))]
+
+plot_PCA(t(rlog_mRNA[select, ]), label = rownames_for_PCA,
+         color_variable = grade, size_variable = t(Ki67_RNA),
+         shape_variable = therapy,
+         filename = paste0(output_dir, "mRNA_PCA_filtered_DESeq2_Ki67_500_most_variant.pdf"),
+         color_palette = grade_pal, size_min_max = c(0, 6500),
+         size_breaks = c(0, 500, 1000, 2000, 3000, 4000, 5000, 6000),
+         size_title = "Ki67 RNA-seq expression")
+
+## repeat for miRNA
+plot_PCA(t(rlog_miRNA), label = rownames_for_PCA,
+         color_variable = grade, size_variable = t(Ki67_RNA),
+         shape_variable = therapy,
+         filename = paste0(output_dir, "miRNA_PCA_filtered_DESeq2_Ki67.pdf"),
+         color_palette = grade_pal, size_min_max = c(0, 6500),
+         size_breaks = c(0, 500, 1000, 2000, 3000, 4000, 5000, 6000),
+         size_title = "Ki67 RNA-seq expression")
+
+## filter for the 500 most variant genes
+rv <- rowVars(rlog_miRNA)
+
+# select the ntop genes by variance
+select <- order(rv, decreasing = TRUE)[seq_len(min(500, length(rv)))]
+
+plot_PCA(t(rlog_miRNA[select, ]), label = rownames_for_PCA,
+         color_variable = grade, size_variable = t(Ki67_RNA),
+         shape_variable = therapy,
+         filename = paste0(output_dir, "miRNA_PCA_filtered_DESeq2_Ki67_500_most_variant.pdf"),
+         color_palette = grade_pal, size_min_max = c(0, 6500),
+         size_breaks = c(0, 500, 1000, 2000, 3000, 4000, 5000, 6000),
+         size_title = "Ki67 RNA-seq expression")
+
+## repeat for the combined one
+combined_rlog <- rbind(rlog_mRNA, rlog_miRNA)
+
+plot_PCA(t(combined_rlog), label = rownames_for_PCA,
+         color_variable = grade, size_variable = t(Ki67_RNA),
+         shape_variable = therapy,
+         filename = paste0(output_dir, "combined_PCA_filtered_DESeq2_Ki67.pdf"),
+         color_palette = grade_pal, size_min_max = c(0, 6500),
+         size_breaks = c(0, 500, 1000, 2000, 3000, 4000, 5000, 6000),
+         size_title = "Ki67 RNA-seq expression")
+
+## filter for the 500 most variant genes
+rv <- rowVars(combined_rlog)
+
+# select the ntop genes by variance
+select <- order(rv, decreasing = TRUE)[seq_len(min(500, length(rv)))]
+
+plot_PCA(t(combined_rlog[select, ]), label = rownames_for_PCA,
+         color_variable = grade, size_variable = t(Ki67_RNA),
+         shape_variable = therapy,
+         filename = paste0(output_dir, "combined_PCA_filtered_DESeq2_Ki67_500_most_variant.pdf"),
+         color_palette = grade_pal, size_min_max = c(0, 6500),
+         size_breaks = c(0, 500, 1000, 2000, 3000, 4000, 5000, 6000),
+         size_title = "Ki67 RNA-seq expression")
+```
+
+## Heatmaps for the significant genes
+```{r}
+## make the color palette for the heatmap with the nature colors
+heatmap_pal <- colorRamp2(c(-4, 0, 4), c("#3C5488B2", "#d5d3d3", "#E64B35B2"))
+
+ha <- HeatmapAnnotation(grade = grade,
+                        col = list(grade = c("2" = "#ffae00b2",
+                                             "3" = "#775c40b2",
+                                             "4" = "#89138dcb")))
+ha_2 <- HeatmapAnnotation(grade = grade,
+                          col = list(grade = c("2" = "#ffae00b2",
+                                               "3" = "#775c40b2",
+                                               "4" = "#89138dcb")),
+                          show_legend = FALSE)
+
+## obtain the data for the row annotations
+## make sure the ordering is correct
+rownames(RNA_sig_genes) <- RNA_sig_genes[, 1]
+RNA_sig_genes <- RNA_sig_genes[, -(1)]
+
+sample_names <- rownames(RNA_sig_counts)
+RNA_sig_genes_ordered <- RNA_sig_genes[order(match(rownames(RNA_sig_genes), sample_names)), ]
+
+## make an annotation for the adj. p-val + LFC
+## generate the color palettes
+LFC_col <- colorRamp2(c(-4, 0, 4), c("#00b7d7", "#d5d3d3", "#f83479"))
+p_adj_LFC_anno <- rowAnnotation(adj_p_val = RNA_sig_genes_ordered[, 6],
+                                LFC = RNA_sig_genes_ordered[, 2],
+                                col = list(adj_p_val = p_adj_col,
+                                           LFC = LFC_col))
+
+rownames(RNA_sig_counts) <- NULL
+colnames(RNA_sig_counts) <- c("TG02a", "TG02b", "TG03a", "TG03b",
+                              "TG04a", "TG04b", "TG05a", "TG05b",
+                              "TG01a", "TG01b", "TG06a", "TG06b")
+
+## repeat for the miRNAs
+## make sure the miRNAs have the correct LFCs and adj. p-values
+sample_names <- rownames(sig_miRNA_counts)
+sig_miRNAs_ordered <- sig_miRNAs[order(match(sig_miRNAs[, 1], sample_names)), ]
+
+colnames(sig_miRNA_counts) <- c("TG02a", "TG02b", "TG03a", "TG03b",
+                                "TG04a", "TG04b", "TG05a", "TG05b",
+                                "TG01a", "TG01b", "TG06a", "TG06b")
+
+## log2 scaled
+miRNA_sig_counts_log <- log2((sig_miRNA_counts + 1))
+## calculate the median expressions
+a_samples <- c(1, 3, 5, 7, 9, 11)
+b_samples <- c(2, 4, 6, 8, 10, 10)
+
+log2_median_expression_a <- apply(miRNA_sig_counts_log[, a_samples], 1, median)
+log2_median_expression_b <- apply(miRNA_sig_counts_log[, b_samples], 1, median)
+
+## add the Nr of targets to the df
+sig_miRNAs_ordered$Nr_corr_DE_targets <- 0
+## read in the Nr. of correlating targets
+Nr_corr_DE_target_miRNA <- read.delim(paste0(miRNA_input, "Nr._correlating_DE_miRNAs_cohorts.tsv"),
+                                      sep = "\t")
+
+for (i in seq_along(sig_miRNAs_ordered[, 1])) {
+  if (sig_miRNAs_ordered[i, 1] %in% Nr_corr_DE_target_miRNA[, 1]) {
+    index <- which(sig_miRNAs_ordered[i, 1] == Nr_corr_DE_target_miRNA[, 1])
+    sig_miRNAs_ordered$Nr_corr_DE_targets[i] <- Nr_corr_DE_target_miRNA[index, 2]
+  }
+}
+
+# Create discrete annotation for Nr_corr_DE_targets
+unique_values <- sort(unique(sig_miRNAs_ordered[, 10]))
+target_col <- c("0" = "#d5d3d3", setNames(colorRampPalette(c("#5a8159b2", "#013500b2"))(length(unique_values) - 1), unique_values[-1]))
+
+## turn the p.adj into -log10
+miRNA_FDR_log10 <- -log10(sig_miRNAs_ordered[, 7])
+p_adj_col_miRNA <- colorRamp2(c(0, max(miRNA_FDR_log10)), c("#d5d3d3", "#ac2500b2"))
+
+LFC_col_miRNA <- colorRamp2(c(-9, 0, 9), c("#00b7d7", "#d5d3d3", "#f83479"))
+median_expr_a_col_miRNA <- colorRamp2(c(0, 21), c("#d5d3d3", "#580016b2"))
+median_expr_b_col_miRNA <- colorRamp2(c(0, 21), c("#d5d3d3", "#580016b2"))
+
+target_col <- c("0" = "#d5d3d3", setNames(colorRampPalette(c("#5a8159b2", "#013500b2"))(length(unique_values) - 1), unique_values[-1]))
+
+p_adj_LFC_anno_miRNA_3 <- rowAnnotation(log2_median_expr_a = log2_median_expression_a,
+                                      log2_median_expr_b = log2_median_expression_b,
+                                      adj_p_val = miRNA_FDR_log10,
+                                      LFC = sig_miRNAs_ordered[, 3],
+                                      Nr_corr_DE_targets = sig_miRNAs_ordered[, 10],
+                                      col = list(log2_median_expr_a = median_expr_a_col_miRNA,
+                                                 log2_median_expr_b = median_expr_b_col_miRNA,
+                                                 adj_p_val = p_adj_col_miRNA,
+                                                 LFC = LFC_col_miRNA,
+                                                 Nr_corr_DE_targets = target_col),
+                                        annotation_legend_param = list(
+    Nr_corr_DE_targets = list(
+      at = unique_values,
+      labels = as.character(unique_values),
+      title = "Nr of DE targets")
+  )
+)
+
+p_adj_LFC_anno_miRNA_4 <- rowAnnotation(log2_median_expr_a = log2_median_expression_a,
+                                      log2_median_expr_b = log2_median_expression_b,
+                                      adj_p_val = miRNA_FDR_log10,
+                                      LFC = sig_miRNAs_ordered[, 3],
+                                      Nr_corr_DE_targets = sig_miRNAs_ordered[, 10],
+                                      col = list(log2_median_expr_a = median_expr_a_col_miRNA,
+                                                 log2_median_expr_b = median_expr_b_col_miRNA,
+                                                 adj_p_val = p_adj_col_miRNA,
+                                                 LFC = LFC_col_miRNA,
+                                                 Nr_corr_DE_targets = target_col),
+                                        annotation_legend_param = list(
+    Nr_corr_DE_targets = list(
+      at = unique_values,
+      labels = as.character(unique_values),
+      title = "Nr of DE targets")
+  ),
+  show_legend = rep(FALSE, 5)
+)
+
+sig_miRNAs_log2_scaled <- t(scale(t(miRNA_sig_counts_log)))
+pdf(file = paste0(output_dir, "Heatmap_sig_miRNAs_log2_scaled_pearson.pdf"),
+    width = 7, height = 7)
+Heatmap(sig_miRNAs_log2_scaled, top_annotation = ha_2,
+        name = "z-score", clustering_distance_rows = "pearson",
+        column_title = "log2 counts of all significant miRNAs, scaled",
+        col = heatmap_pal, left_annotation = p_adj_LFC_anno_miRNA_4,
+        show_heatmap_legend = FALSE)
+Heatmap(sig_miRNAs_log2_scaled, top_annotation = ha,
+        name = "z-score", clustering_distance_rows = "pearson",
+        column_title = "log2 counts of all significant miRNAs, scaled",
+        col = heatmap_pal, left_annotation = p_adj_LFC_anno_miRNA_3)
+dev.off()
+
+# adjusting the row_names with row_names_gp = grid::gpar(fontsize = 8)
+```
+
+## read in the lncRNAs to make a heatmap for them (Fig 3a)
+```{r}
+sig_lncRNAs <- read.delim(paste0(lncRNA_input, "norm_counts_all_significant_lncRNAs_q_01.txt"),
+                          sep = "\t")
+
+colnames(sig_lncRNAs) <- c("TG02a", "TG02b", "TG03a", "TG03b",
+                           "TG04a", "TG04b", "TG05a", "TG05b",
+                           "TG01a", "TG01b", "TG06a", "TG06b")
+
+## calculate the median expression for primary and progressed samples
+a_samples <- c(1, 3, 5, 7, 9, 11)
+b_samples <- c(2, 4, 6, 8, 10, 10)
+
+## extract the LFC and adj. p-val from RNA_results
+sig_lncRNA_results <- RNA_results[RNA_results[, 1] %in% rownames(sig_lncRNAs), ]
+
+## make sure the ordering is correct
+sample_names <- rownames(sig_lncRNAs)
+sig_lncRNA_results_ordered <- sig_lncRNA_results[order(match(sig_lncRNA_results[, 1], sample_names)), ]
+
+log2_sig_lncRNAs <- log2(sig_lncRNAs + 1)
+sig_lncRNAs_log2_scaled <- t(scale(t(log2_sig_lncRNAs)))
+log2_median_expression_a <- apply(log2_sig_lncRNAs[, a_samples], 1, median)
+log2_median_expression_b <- apply(log2_sig_lncRNAs[, b_samples], 1, median)
+
+## read in the amount of targets per lncRNA
+targets_per_lncRNA <- read.delim(paste0(lncRNA_input, "Nr._correlating_DE_lncRNAs_cohorts.tsv"),
+                                 sep = "\t")
+targets_per_lncRNA_ordered <- targets_per_lncRNA[order(match(targets_per_lncRNA[, 1], sample_names)), ]
+
+# Create discrete annotation for Nr_corr_DE_targets
+unique_values <- sort(unique(targets_per_lncRNA_ordered[, 2]))
+target_col <- c("0" = "#d5d3d3", setNames(colorRampPalette(c("#5a8159b2", "#013500b2"))(length(unique_values) - 1), unique_values[-1]))
+
+## make the annotations
+lncRNA_FDR_log10 <- -log10(sig_lncRNA_results_ordered[, 7])
+p_adj_col_lncRNA <- colorRamp2(c(0, max(lncRNA_FDR_log10)), c("#d5d3d3", "#ac2500b2"))
+
+LFC_col_lncRNA <- colorRamp2(c(-3, 0, 3), c("#00b7d7", "#d5d3d3", "#f83479"))
+median_expr_a_col_lncRNA <- colorRamp2(c(0, 9), c("#d5d3d3", "#580016b2"))
+median_expr_b_col_lncRNA <- colorRamp2(c(0, 10), c("#d5d3d3", "#580016b2"))
+
+p_adj_LFC_anno_lncRNA_3 <- rowAnnotation(
+  median_expr_a = log2_median_expression_a,
+  median_expr_b = log2_median_expression_b,
+  adj_p_val = lncRNA_FDR_log10,
+  LFC = sig_lncRNA_results_ordered[, 3],
+  Nr_corr_DE_targets = targets_per_lncRNA_ordered[, 2],
+  col = list(
+    median_expr_a = median_expr_a_col_lncRNA,
+    median_expr_b = median_expr_b_col_lncRNA,
+    adj_p_val = p_adj_col_lncRNA,
+    LFC = LFC_col_lncRNA,
+    Nr_corr_DE_targets = target_col),
+  annotation_legend_param = list(
+    Nr_corr_DE_targets = list(
+      at = unique_values,
+      labels = as.character(unique_values),
+      title = "Nr of DE targets")
+  )
+)
+
+p_adj_LFC_anno_lncRNA_4 <- rowAnnotation(
+  median_expr_a = log2_median_expression_a,
+  median_expr_b = log2_median_expression_b,
+  adj_p_val = lncRNA_FDR_log10,
+  LFC = sig_lncRNA_results_ordered[, 3],
+  Nr_corr_DE_targets = targets_per_lncRNA_ordered[, 2],
+  col = list(
+    median_expr_a = median_expr_a_col_lncRNA,
+    median_expr_b = median_expr_b_col_lncRNA,
+    adj_p_val = p_adj_col_lncRNA,
+    LFC = LFC_col_lncRNA,
+    Nr_corr_DE_targets = target_col),
+  annotation_legend_param = list(
+    Nr_corr_DE_targets = list(
+      at = unique_values,
+      labels = as.character(unique_values),
+      title = "Nr of DE targets")
+  ),
+  show_legend = rep(FALSE, 5)
+)
+
+pdf(file = paste0(output_dir, "Heatmap_sig_lncRNAs_log2_scaled_pearson.pdf"),
+    width = 7, height = 7)
+## without legend
+Heatmap(sig_lncRNAs_log2_scaled, top_annotation = ha_2,
+        name = "z-score", clustering_distance_rows = "pearson",
+        column_title = "log2 counts of all significant lncRNAs, scaled",
+        col = heatmap_pal, left_annotation = p_adj_LFC_anno_lncRNA_4,
+        row_names_gp = grid::gpar(fontsize = 10),
+        show_heatmap_legend = FALSE)
+## one with legend
+Heatmap(sig_lncRNAs_log2_scaled, top_annotation = ha,
+        name = "z-score", clustering_distance_rows = "pearson",
+        column_title = "log2 counts of all significant lncRNAs, scaled",
+        col = heatmap_pal, left_annotation = p_adj_LFC_anno_lncRNA_3,
+        row_names_gp = grid::gpar(fontsize = 10))
+dev.off()
+
+```
+
+## make a function for plotting enrichment heatmaps
+```{r}
+## make sure the R-HSA is still included, otherwise the pathway mapping fails
+color_palette_25 <- c("#1C86EE", "#E31A1C", "#FF7F00", "#63E864",
+                      "#6A3D9A", "#FFD700", "#7EC0EE", "#4C4A4A", "#B2C5B2",
+                      "#EEE685", "#BD96D0", "#A08766", "#FFB937", "#B03060",
+                      "#FB6BF5", "#0000B5", "#31FAFD", "#18CA18", "#696900",
+                      "#6D4722", "#FF5656", "#2B778C", "#50A3BF", "#999999", "#005745")
+names(color_palette_25) <- c("Hemostasis", "Neuronal System",
+                             "Developmental Biology", "Cell Cycle", "Disease",
+                             "DNA Repair", "Extracellular matrix organization",
+                             "Gene expression (Transcription)", "Immune System",
+                             "Metabolism of proteins", "Metabolism of RNA",
+                             "Signal Transduction",
+                             "Vesicle-mediated transport",
+                             "Cell-cell communication",
+                             "Programmed Cell Death", "NA",
+                             "Cellular responses to stimuli", "DNA Replication",
+                             "Metabolism", "Reproduction", "Sensory Perception",
+                             "Chromatin organization",
+                             "Organelle biogenesis and maintenance",
+                             "Circadian Clock",
+                             "Transport of small molecules")
+
+legend("topright",                      # Position
+       legend = names(color_palette_25),    # Legend text
+       fill = color_palette_25)            # Legend title
+
+## should there be a need, this is how I can change what is shown:
+## annotation_legend_param = list(FDR = list(at = c(0, 0.025, 0.05)))
+
+sig_enrichment_results <- sig_TG_GLASS_Reactome
+DE_genes_object <- RNA_sig_genes[, c(1, 3)]
+
+make_enrichment_heatmap <- function(sig_enrichment_results, DE_genes_object,
+                                    plot_name, fontsize_genes = 6, fontsize_pathways = 6) {
+        pattern <- "R-HSA-[0-9]+"
+        HSA_identifiers <- str_extract(sig_enrichment_results[, 1], pattern)
+        sig_enrichment_results[, 1] <- gsub(" R-HSA.*", "", sig_enrichment_results[, 1])
+        ## bottom annotation
+        ## run a for loop to check whether the gene is in the pathway or not
+        heatmap_df <- as.data.frame(matrix(nrow = dim(sig_enrichment_results)[1],
+                                           ncol = dim(DE_genes_object)[1]))
+        colnames(heatmap_df) <- DE_genes_object[, 1]
+        rownames(heatmap_df) <- sig_enrichment_results[, 1]
+        for (i in seq_len(dim(DE_genes_object)[1])) {
+        ## loop for the genes
+        gene <- DE_genes_object[i, 1]
+        for (j in seq_len(dim(sig_enrichment_results)[1])) {
+        ## split the gene names
+        gene_names <- unlist(strsplit(sig_enrichment_results[j, 9], split = ";"))
+        ## loop for the pathways
+        if (gene %in% gene_names) {
+        heatmap_df[j, i] <- "yes"
+        } else {
+        heatmap_df[j, i] <- "no"
+        }
+  }
+}
+
+## now sort out all those that only have "no"
+to_be_removed <- c()
+for (i in seq_len(dim(heatmap_df)[2])){
+        if(length(which(heatmap_df[, i] == "no")) == dim(sig_enrichment_results)[1]) {
+                to_be_removed <- c(to_be_removed, i)
+        }
+}
+heatmap_df_filtered <- heatmap_df[, -(to_be_removed)]
+
+## filter for those in heatmap_df_filtered
+transcript_LFCs_filtered <- DE_genes_object[which(DE_genes_object[, 1] %in% colnames(heatmap_df_filtered)), ]
+## sort them by LFC
+transcript_LFCs_filtered <- transcript_LFCs_filtered[order(transcript_LFCs_filtered[, 2]), ]
+
+## make sure heatmap_df is sorted the same as transcript_LFCs_filtered
+new_order <- transcript_LFCs_filtered[, 1]
+heatmap_df_filtered <- heatmap_df_filtered[, order(match(colnames(heatmap_df_filtered), new_order))]
+
+## create a second annotation to indicate whether the gene is shared or not
+
+## the bottom annotation is a barplot
+LFC_anno <- c("#00b7d7", "#d5d3d3", "#f83479")
+bar_col <- c(rep("#00b7d7", length(which(transcript_LFCs_filtered[, 2] < 0))),
+             rep("#f83479", length(which(transcript_LFCs_filtered[, 2] >= 0))))
+bottom_anno <- HeatmapAnnotation(log2FC = anno_barplot(transcript_LFCs_filtered[, 2],
+                                 baseline = 0, gp = gpar(
+                                                         fontsize = 10,
+                                                         col  =  bar_col,
+                                                         fill  =  bar_col),
+                                                         height = unit(1.5, "cm")),
+                                 show_legend = FALSE,
+                                 show_annotation_name = TRUE,
+                                 annotation_name_side = "left")
+
+## create the annotation for the pathway category
+pathway_cat <- c()
+for (i in seq_along(sig_enrichment_results$Term)){
+  index <- sapply(pathway_identifiers, function(x) any(x == HSA_identifiers[i]))
+  if (length(which(index)) > 0) {
+  pathway_cat[i] <- names(which(index))
+  } else {
+  pathway_cat[i] <- "NA"
+  }
+}
+
+## reorder the heatmap_df_filtered based on the category
+## attach, order, replot
+## extract the set size
+## attach and reoder by category, then by set size
+set_size <- as.numeric(str_split_fixed(sig_enrichment_results$Overlap, "/", 2)[, 2])
+heatmap_df_filtered <- cbind(heatmap_df_filtered, pathway_cat, set_size)
+heatmap_df_filtered <- heatmap_df_filtered[order(heatmap_df_filtered$pathway_cat, -heatmap_df_filtered$set_size), ]
+
+## make the annotation before removing the row
+color_palette_pathways <- color_palette_25[names(color_palette_25) %in% unique(pathway_cat)]
+left_anno <- rowAnnotation(pathway = heatmap_df_filtered$pathway_cat,
+                           col = list(pathway = color_palette_pathways))
+
+heatmap_df_filtered <- heatmap_df_filtered[, -(which(colnames(heatmap_df_filtered) == "pathway_cat"))]
+heatmap_df_filtered <- heatmap_df_filtered[, -(which(colnames(heatmap_df_filtered) == "set_size"))]
+
+## reoder the sig_enrichment results to match the heatmap_df
+sig_enrichment_results <- sig_enrichment_results[order(match(sig_enrichment_results[, 1], rownames(heatmap_df_filtered))), ]
+## paste the overlap together
+new_names <- paste0(sig_enrichment_results[, 1], " (", sig_enrichment_results[, 2], ")")
+rownames(heatmap_df_filtered) <- new_names
+
+## right annotation
+        odds_col <- colorRamp2(c(0, round(max(sig_enrichment_results[, 7])) + 1), c("#d5d3d3", "#390347b2"))
+        rounding_value <- 100
+        FDR_log10 <- -log10(sig_enrichment_results[, 4])
+        p_adj_col <- colorRamp2(c(0, max(FDR_log10)), c("#d5d3d3", "#ac2500b2"))
+        max_combined_score <- ceiling(max(sig_enrichment_results[, 8]) / rounding_value) * rounding_value
+        combined_score_col <- colorRamp2(c(0, 1200), c("#d5d3d3", "#014700b2"))
+        right_annot <- rowAnnotation(odds_ratio = sig_enrichment_results[, 7],
+                                     log10_FDR = FDR_log10,
+                                     combined_score = sig_enrichment_results[, 8],
+                                     col = list(odds_ratio = odds_col,
+                                                log10_FDR = p_adj_col,
+                                                combined_score = combined_score_col))
+
+## plotting the heatmap
+heatmap_col <- c("#FFFFFF", "#d5d3d3")
+names(heatmap_col) <- c("no", "yes")
+pdf(file = paste0(output_dir, plot_name),
+    height = 5, width = 15)
+print(Heatmap(heatmap_df_filtered, bottom_annotation = bottom_anno,
+        right_annotation = right_annot, col = heatmap_col,
+        left_annotation = left_anno,
+        cluster_rows = FALSE, cluster_columns = FALSE,
+        row_names_side = "left",
+        column_names_gp = grid::gpar(fontsize = fontsize_genes),
+        row_names_gp = grid::gpar(fontsize = fontsize_pathways),
+        heatmap_legend_param = list(
+        title = "part of the pathway")))
+dev.off()
+}
+```
+
+## make a second function to extract the percentage of each pathway category
+```{r}
+extract_pathway_cats <- function(sig_enrichment_results) {
+  pattern <- "R-HSA-[0-9]+"
+  HSA_identifiers <- str_extract(sig_enrichment_results[, 1], pattern)
+  sig_enrichment_results[, 1] <- gsub(" R-HSA.*", "", sig_enrichment_results[, 1])
+
+  pathway_cat <- c()
+for (i in seq_along(sig_enrichment_results$Term)){
+  index <- sapply(pathway_identifiers, function(x) any(x == HSA_identifiers[i]))
+  if (length(which(index)) > 0) {
+  pathway_cat[i] <- names(which(index))
+  } else {
+  pathway_cat[i] <- "NA"
+  }
+}
+
+pathway_cat_table <- as.data.frame(table(pathway_cat))
+pathway_cat_table$percentage <- pathway_cat_table$Freq / length(pathway_cat)
+
+return(pathway_cat_table)
+}
+```
+
+## use the enrichR package for the Sojka modules
+```{r}
+dbs <- c("Reactome_2022")
+
+Middle_Late_TG_unique_down <- intersect(rownames(Reactome_Middle_Late_TG_down), TG_unique[, 1])
+Middle_Late_TG_GLASS_down <- intersect(rownames(Reactome_Middle_Late_TG_down), TG_GLASS_shared_genes[, 1])
+Late_TG_unique_down <- intersect(rownames(Reactome_Late_TG_down), TG_unique[, 1])
+Late_TG_GLASS_down <- intersect(rownames(Reactome_Late_TG_down), TG_GLASS_shared_genes[, 1])
+
+if (websiteLive) {
+    TG_unique_Late_enriched <- enrichr(Late_TG_unique_down, dbs)
+    TG_GLASS_Late_enriched <- enrichr(Late_TG_GLASS_down, dbs)
+    TG_unique_Middle_Late_enriched <- enrichr(Middle_Late_TG_unique_down, dbs)
+    TG_GLASS_Middle_Late_enriched <- enrichr(Middle_Late_TG_GLASS_down, dbs)
+}
+
+write.xlsx(TG_unique_Late_enriched[["Reactome_2022"]],
+           paste0(output_dir, "TG_unique_Late_pathways_DE.xlsx"))
+write.xlsx(TG_unique_Middle_Late_enriched[["Reactome_2022"]],
+           paste0(output_dir, "TG_unique_Middle_Late_pathways_DE.xlsx"))
+write.xlsx(TG_GLASS_Late_enriched[["Reactome_2022"]],
+           paste0(output_dir, "TG_GLASS_Late_pathways_DE.xlsx"))
+write.xlsx(TG_GLASS_Middle_Late_enriched[["Reactome_2022"]],
+           paste0(output_dir, "TG_GLASS_Middle_Late_pathways_DE.xlsx"))
+
+## combined them and repeat
+post_treatment_Middle_Late <- c(Middle_Late_TG_unique_down, Middle_Late_TG_GLASS_down)
+post_treatment_Late <- c(Late_TG_unique_down, Late_TG_GLASS_down)
+
+if (websiteLive) {
+    post_treatment_Late_enriched <- enrichr(post_treatment_Late, dbs)
+    post_treatment_Middle_Late_enriched <- enrichr(post_treatment_Middle_Late, dbs)
+}
+
+
+write.xlsx(post_treatment_Late_enriched[["Reactome_2022"]],
+           paste0(output_dir, "post_treatment_Late_pathways_DE.xlsx"))
+write.xlsx(post_treatment_Middle_Late_enriched[["Reactome_2022"]],
+           paste0(output_dir, "post_treatment_Middle_Late_pathways_DE.xlsx"))
+
+## combined the two modules
+TG_unique_both <- c(Middle_Late_TG_unique_down, Late_TG_unique_down)
+TG_GLASS_both <- c(Middle_Late_TG_GLASS_down, Late_TG_GLASS_down)
+
+if (websiteLive) {
+    unique_both_enriched <- enrichr(TG_unique_both, dbs)
+    TG_GLASS_both_enriched <- enrichr(TG_GLASS_both, dbs)
+}
+
+write.xlsx(unique_both_enriched[["Reactome_2022"]],
+           paste0(output_dir, "unique_both_enriched_pathways_DE.xlsx"))
+write.xlsx(TG_GLASS_both_enriched[["Reactome_2022"]],
+           paste0(output_dir, "TG_GLASS_both_enriched_pathways_DE.xlsx"))
+```
+
+## use the enrichR package to get the results instead of the website
+## make the heatmaps for TG, GLASS and TCGA (protein coding, measured in all)
+```{r}
+## getting all the available databases
+if (websiteLive) dbs <- listEnrichrDbs()
+dbs <- c("Reactome_2022")
+
+## read in the data
+GLASS_DE_genes_pc_measured_in_all <- read.delim(paste0(lncRNA_input, "GLASS_DE_genes_coding_measured_in_all.txt"))
+
+## read in the TCGA results
+TCGA_DE_genes <- read.xlsx(paste0(output_dir, "TCGA/", "TCGA_primary_G2-3_vs_G4_DESeq2.xlsx"), sheet = 1)
+
+## filter out the ones without symbol
+TCGA_DE_genes_symbol <- TCGA_DE_genes[-which(is.na(TCGA_DE_genes$symbol) == TRUE), ]
+TCGA_DE_genes_pc_measured_in_all <- read.delim(paste0(lncRNA_input, "TCGA_DE_genes_coding_measured_in_all.txt"))
+
+## filter out for only the protein-coding ones in TG
+TG_sig_genes_pc_measured_in_all <- read.delim(paste0(lncRNA_input, "RNA_sig_genes_coding_measured_in_all.txt"))
+
+if (websiteLive) {
+    GLASS_enriched <- enrichr(GLASS_DE_genes_pc_measured_in_all[, 8], dbs)
+    TG_enriched <- enrichr(TG_sig_genes_pc_measured_in_all[, 1], dbs)
+    TCGA_enriched <- enrichr(TCGA_DE_genes_pc_measured_in_all[, 8], dbs)
+}
+
+## write to file
+write.xlsx(TG_enriched[["Reactome_2022"]],
+           paste0(output_dir, "TG_protein_coding_measured_in_all_pathways_DE.xlsx"))
+write.xlsx(GLASS_enriched[["Reactome_2022"]],
+           paste0(GLASS_input, "GLASS_protein_coding_measured_in_all_pathways_DE.xlsx"))
+write.xlsx(TCGA_enriched[["Reactome_2022"]],
+           paste0(output_dir, "TCGA_protein_coding_measured_in_all_pathways.xlsx"))
+
+#############
+## GLASS ####
+#############
+
+## read in the GLASS DE genes
+GLASS_DE_genes <- read.delim(paste0(GLASS_input, "GLASS_RNA_DESeq2_sig_genes_symbols.txt"),
+                             sep = "\t")
+## filter out those without symbol
+GLASS_DE_genes <- GLASS_DE_genes[!is.na(GLASS_DE_genes$SYMBOL), ]
+
+## extract the data for the shared between GLASS and TG
+TG_GLASS_shared_genes <- read.xlsx(paste0(output_dir, "TG_GLASS_shared_combined_72.xlsx"))
+TG_GLASS_shared_stats <- GLASS_DE_genes[which(GLASS_DE_genes$SYMBOL %in% TG_GLASS_shared_genes[, 1]), ]
+write.xlsx(TG_GLASS_shared_stats, file = paste0(output_dir, "GLASS_TG_shared_72_statistics.xlsx"))
+
+## if wanting to look at the results individually
+if (websiteLive) View(GLASS_enriched[["GO_Biological_Process_2023"]])
+```
+
+## make a plot showing the distribution of genes based on LFC in various cohorts (Fig S1e)
+```{r}
+## plot all genes with adj. p-val 0.05 in at least one cohort
+
+## read in all the genes
+GLASS_DE_genes_pc_measured_in_all <- read.delim(paste0(lncRNA_input, "GLASS_DE_genes_coding_measured_in_all.txt"))
+
+## read in the TCGA results
+TCGA_DE_genes <- read.xlsx(paste0(output_dir, "TCGA/", "TCGA_primary_G2-3_vs_G4_DESeq2.xlsx"), sheet = 1)
+
+## filter out the ones without symbol
+TCGA_DE_genes_symbol <- TCGA_DE_genes[-which(is.na(TCGA_DE_genes$symbol) == TRUE), ]
+TCGA_DE_genes_pc_measured_in_all <- read.delim(paste0(lncRNA_input, "TCGA_DE_genes_coding_measured_in_all.txt"))
+
+## protein-coding in TG
+TG_sig_genes_pc_measured_in_all <- read.delim(paste0(lncRNA_input, "RNA_sig_genes_coding_measured_in_all.txt"))
+
+## read in the non-significant ones
+## for TG it will be the RNA_results object
+GLASS_results <- read.delim(paste0(GLASS_input, "GLASS_RNA_DESeq2_all_genes_symbols.txt"),
+                             sep = "\t")
+
+## need to handle the cases when only 1 transcript of the gene is DE
+GLASS_results <- GLASS_results %>%
+           ## keep the ones with the lowest p.adj
+           group_by(SYMBOL) %>%
+           slice_min(padj, n = 1) %>%
+           ## for those with same p.adj
+           group_by(SYMBOL, padj) %>%
+           sample_n(size = 1)
+
+TCGA_results <- read.delim(paste0(miRNA_input, "TCGA_DESeq2_all_genes_symbols.txt"),
+                           sep = "\t")
+
+## need to handle the cases when only 1 transcript of the gene is DE
+TCGA_results <- TCGA_results %>%
+           ## keep the ones with the lowest p.adj
+           group_by(SYMBOL) %>%
+           slice_min(padj, n = 1) %>%
+           ## for those with same p.adj
+           group_by(SYMBOL, padj) %>%
+           sample_n(size = 1)
+
+## make a df without filtering for significance
+GLASS_subset <- GLASS_results[, c(3, 7, 8)]
+TG_subset <- RNA_results[, c(1, 3, 7)]
+colnames(TG_subset) <- c("SYMBOL", "TG_LFC", "TG_padj")
+GLASS_df <- merge(GLASS_subset, TG_subset, by = "SYMBOL")
+
+colnames(GLASS_df)[2:3] <- c("GLASS_LFC", "GLASS_padj")
+
+GLASS_df$TG_padj <- ifelse(is.na(GLASS_df$TG_padj), 1,GLASS_df$TG_padj)
+GLASS_df$GLASS_padj <- ifelse(is.na(GLASS_df$GLASS_padj), 1, GLASS_df$GLASS_padj)
+
+GLASS_df$DE_status <- with(GLASS_df, ifelse(
+    TG_padj < 0.05 & GLASS_padj > 0.05, "adj_p_val_0.05_in_TG",
+    ifelse(TG_padj > 0.05 & GLASS_padj < 0.05, "adj_p_val_0.05_in_GLASS",
+    ifelse(TG_padj < 0.05 & GLASS_padj < 0.05, "adj_p_val_0.05_in_both", "not_DE")
+    )
+))
+
+## filter to only include those genes with p.adj < 0.05 in at least one
+indices <- which(GLASS_df$GLASS_padj > 0.05 & GLASS_df$TG_padj > 0.05)
+GLASS_df <- GLASS_df[-(indices), ]
+
+pdf(file = paste0(output_dir, "GLASS_vs_TG_LFCs_all.pdf"))
+ggplot(GLASS_df, aes(x = TG_LFC, y = GLASS_LFC, colour = DE_status)) +
+  geom_point() +
+  scale_color_manual(values = c("adj_p_val_0.05_in_TG" = "#8EC3F7",
+                                "adj_p_val_0.05_in_GLASS" = "#D3FFD3",
+                                "adj_p_val_0.05_in_both" = "#B3A0E6")) +
+  geom_hline(yintercept = -1, color = "black") +
+  geom_vline(xintercept = -1, color = "black") +
+  geom_hline(yintercept = 1, color = "black") +
+  geom_vline(xintercept = 1, color = "black") +
+  theme_classic()
+dev.off()
+
+## repeat for TCGA
+TCGA_subset <- TCGA_results[, c(3, 7, 8)]
+TCGA_df <- merge(TCGA_subset, TG_subset, by = "SYMBOL")
+colnames(TCGA_df)[2:3] <- c("TCGA_LFC", "TCGA_padj")
+
+## set NAs in the p.adj to 1 so the ifelse can handle it
+TCGA_df$TG_padj <- ifelse(is.na(TCGA_df$TG_padj), 1, TCGA_df$TG_padj)
+TCGA_df$TCGA_padj <- ifelse(is.na(TCGA_df$TCGA_padj), 1, TCGA_df$TCGA_padj)
+
+## make a column if sig in both, one, etc.
+TCGA_df$DE_status <- with(TCGA_df, ifelse(
+    TG_padj < 0.05 & TCGA_padj > 0.05, "adj_p_val_0.05_in_TG",
+    ifelse(TG_padj > 0.05 & TCGA_padj < 0.05, "adj_p_val_0.05_in_TCGA",
+           ifelse(TG_padj < 0.05 & TCGA_padj < 0.05, "adj_p_val_0.05_in_both", "not_DE")
+    )
+))
+
+indices <- which(TCGA_df$TCGA_padj > 0.05 & TCGA_df$TG_padj > 0.05)
+TCGA_df <- TCGA_df[-(indices), ]
+
+pdf(file = paste0(output_dir, "TCGA_vs_TG_LFCs_all.pdf"))
+ggplot(TCGA_df, aes(x = TG_LFC, y = TCGA_LFC, colour = DE_status)) +
+  geom_point() +
+  scale_color_manual(values = c("adj_p_val_0.05_in_TG" = "#8EC3F7",
+                                "adj_p_val_0.05_in_TCGA" = "#D898B0",
+                                "adj_p_val_0.05_in_both" = "#B3A0E6")) +
+  geom_hline(yintercept = -1, color = "black") +
+  geom_vline(xintercept = -1, color = "black") +
+  geom_hline(yintercept = 1, color = "black") +
+  geom_vline(xintercept = 1, color = "black") +
+  theme_classic()
+dev.off()
+```
+
+## extract the gene annotations for the GRN
+```{r}
+## utilising the make_enrichment_heatmap function as base
+## re-run using all the pathways, not only the significant ones
+TG_enriched_Reactome <- read.xlsx(paste0(output_dir, "TG_protein_coding_measured_in_all_pathways_DE.xlsx"))
+
+sig_enrichment_results <- TG_enriched_Reactome
+DE_genes_object <- RNA_sig_genes[, c(1, 3)]
+
+## re-use the function structure
+pattern <- "R-HSA-[0-9]+"
+HSA_identifiers <- str_extract(sig_enrichment_results[, 1], pattern)
+sig_enrichment_results[, 1] <- gsub(" R-HSA.*", "", sig_enrichment_results[, 1])
+## run a for loop to check whether the gene is in the pathway or not
+heatmap_df <- as.data.frame(matrix(nrow = dim(sig_enrichment_results)[1],
+                                   ncol = dim(DE_genes_object)[1]))
+colnames(heatmap_df) <- DE_genes_object[, 1]
+rownames(heatmap_df) <- sig_enrichment_results[, 1]
+for (i in seq_len(dim(DE_genes_object)[1])) {
+## loop for the genes
+        gene <- DE_genes_object[i, 1]
+        for (j in seq_len(dim(sig_enrichment_results)[1])) {
+        ## split the gene names
+        gene_names <- unlist(strsplit(sig_enrichment_results[j, 9], split = ";"))
+        ## loop for the pathways
+        if (gene %in% gene_names) {
+        heatmap_df[j, i] <- "yes"
+        } else {
+        heatmap_df[j, i] <- "no"
+        }
+  }
+}
+
+## now sort out all those that only have "no"
+to_be_removed <- c()
+for (i in seq_len(dim(heatmap_df)[2])){
+        if(length(which(heatmap_df[, i] == "no")) == dim(sig_enrichment_results)[1]) {
+                to_be_removed <- c(to_be_removed, i)
+        }
+}
+heatmap_df_filtered <- heatmap_df[, -(to_be_removed)]
+
+## create the annotation for the pathway category
+pathway_cat <- c()
+for (i in seq_along(sig_enrichment_results$Term)){
+  index <- sapply(pathway_identifiers, function(x) any(x == HSA_identifiers[i]))
+  if (length(which(index)) > 0) {
+  pathway_cat[i] <- names(which(index))
+  } else {
+  pathway_cat[i] <- "NA"
+  }
+}
+
+## duplicating the pathway names for safekeeping
+heatmap_df_filtered <- cbind(rownames(heatmap_df_filtered), heatmap_df_filtered, pathway_cat)
+colnames(heatmap_df_filtered)[1] <- "pathway_name"
+
+gene_columns <- setdiff(colnames(heatmap_df_filtered), c("pathway_name", "pathway_cat"))
+
+df_long <- heatmap_df_filtered %>%
+  pivot_longer(cols = all_of(gene_columns), names_to = "Gene", values_to = "Included") %>%
+  filter(Included == "yes") %>%
+  select(-Included)
+
+genes_annotated_df <- df_long %>%
+  distinct(Gene, pathway_cat) %>%
+  mutate(Value = 1) %>%
+  pivot_wider(names_from = pathway_cat, values_from = Value, values_fill = list(Value = 0))
+
+# Display the result
+## make the gene name the row name to make it numeric
+genes_annotated_df <- as.data.frame(genes_annotated_df)
+rownames(genes_annotated_df) <- genes_annotated_df[, 1]
+genes_annotated_df <- genes_annotated_df[, -(1)]
+
+## write to file to use in the GRN_analysis notebook
+write.table(genes_annotated_df,
+            file = paste0(output_dir, "TG_DE_genes_annotated_to_categories.txt"),
+            sep = "\t", quote = FALSE)
+```
+
+## double-check the downloaded gene annotations from Reactome
+The file "ReactomePathways.gmt" was downloaded from the Reactome Download section on 30.09.24
+```{r}
+# Read the file
+lines <- readLines(paste0(Reactome_input, "ReactomePathways.gmt/ReactomePathways.gmt"))
+
+# Split lines into components
+gene_sets <- strsplit(lines, "\t")
+
+# Extract gene set names, descriptions, and gene lists
+gene_set_names <- sapply(gene_sets, `[`, 1)
+gene_set_identifiers <- sapply(gene_sets, `[`, 2)
+gene_list <- lapply(gene_sets, function(x) x[-(1:2)])  # Remove first two columns
+names(gene_list) <- gene_set_identifiers
+
+## obtain the number of unique genes in each pathway category
+## unique_cats
+## remove the not annoated
+
+unique_cats <- names(pathway_identifiers)
+cat_genes_final <- list()
+for (i in seq_along(unique_cats)){
+  ## for each category, obtain the HSA pathway identifiers
+  pathway_cat <- unique_cats[i]
+  pathway_list <- unlist(pathway_identifiers[[pathway_cat]])
+  cat_genes <- list()
+  for (j in seq_along(pathway_list)){
+  cat_genes[[j]] <- unlist(gene_list[[j]])
+  }
+  cat_genes_final[[i]] <- unique(unlist(cat_genes))
+}
+names(cat_genes_final) <- unique_cats
+
+## for the TCGA unique genes
+TCGA_unique_annotation_df <- as.data.frame(matrix(nrow = dim(TCGA_unique)[1],
+                                                  ncol = length(pathway_identifiers)))
+## loop through each column
+colnames(TCGA_unique_annotation_df) <- names(pathway_identifiers)
+rownames(TCGA_unique_annotation_df) <- TCGA_unique$SYMBOL
+for (i in seq_len(dim(TCGA_unique_annotation_df)[1])) {
+## loop for the genes
+        gene <- rownames(TCGA_unique_annotation_df)[i]
+        for (j in seq_len(dim(TCGA_unique_annotation_df)[2])) {
+        ## split the gene names
+        gene_names <- unlist(strsplit(cat_genes_final[[j]], split = ","))
+        ## loop for the pathways
+        if (gene %in% gene_names) {
+        TCGA_unique_annotation_df[i, j] <- 1
+        } else {
+        TCGA_unique_annotation_df[i, j] <- 0
+        }
+  }
+}
+
+## those that have a zero sum are actually NAs
+TCGA_unique_annotation_df[apply(TCGA_unique_annotation_df, 1, sum) == 0, ] <- NA
+
+write.table(TCGA_unique_annotation_df,
+            file = paste0(output_dir, "TCGA_unique_annotated_to_categories.txt"),
+            sep = "\t", quote = FALSE)
+
+# Create a data frame
+Reactome_pathway_lists <- data.frame(
+  PathwayName = gene_set_names,
+  PathwayID = gene_set_descriptions,
+  Genes = I(gene_list)  # Use I() to store lists in a data frame column
+)
+
+## run through the loops
+sig_enrichment_results <- Reactome_pathway_lists
+DE_genes_object <- RNA_sig_genes[, c(1, 3)]
+
+## re-use the function structure
+## run a for loop to check whether the gene is in the pathway or not
+heatmap_df <- as.data.frame(matrix(nrow = dim(sig_enrichment_results)[1],
+                                   ncol = dim(DE_genes_object)[1]))
+colnames(heatmap_df) <- DE_genes_object[, 1]
+rownames(heatmap_df) <- sig_enrichment_results[, 1]
+for (i in seq_len(dim(DE_genes_object)[1])) {
+## loop for the genes
+        gene <- DE_genes_object[i, 1]
+        for (j in seq_len(dim(sig_enrichment_results)[1])) {
+        ## split the gene names
+        gene_names <- unlist(strsplit(sig_enrichment_results[j, 3], split = ","))
+        ## test <- unlist(strsplit(as.character(sig_enrichment_results[j, 3]), split = ","))
+        ## test_2 <- cleaned_str <- gsub("\\\\", "", test)
+        ## loop for the pathways
+        if (gene %in% gene_names) {
+        heatmap_df[j, i] <- "yes"
+        } else {
+        heatmap_df[j, i] <- "no"
+        }
+  }
+}
+
+## now sort out all those that only have "no"
+to_be_removed <- c()
+for (i in seq_len(dim(heatmap_df)[2])){
+        if(length(which(heatmap_df[, i] == "no")) == dim(sig_enrichment_results)[1]) {
+                to_be_removed <- c(to_be_removed, i)
+        }
+}
+heatmap_df_filtered <- heatmap_df[, -(to_be_removed)]
+
+## create the annotation for the pathway category
+pathway_cat <- c()
+for (i in seq_along(sig_enrichment_results$Term)){
+  index <- sapply(pathway_identifiers, function(x) any(x == HSA_identifiers[i]))
+  if (length(which(index)) > 0) {
+  pathway_cat[i] <- names(which(index))
+  } else {
+  pathway_cat[i] <- "NA"
+  }
+}
+
+## duplicating the pathway names for safekeeping
+heatmap_df_filtered <- cbind(rownames(heatmap_df_filtered), heatmap_df_filtered, pathway_cat)
+colnames(heatmap_df_filtered)[1] <- "pathway_name"
+
+gene_columns <- setdiff(colnames(heatmap_df_filtered), c("pathway_name", "pathway_cat"))
+
+df_long <- heatmap_df_filtered %>%
+  pivot_longer(cols = all_of(gene_columns), names_to = "Gene", values_to = "Included") %>%
+  filter(Included == "yes") %>%
+  select(-Included)
+
+genes_annotated_df <- df_long %>%
+  distinct(Gene, pathway_cat) %>%
+  mutate(Value = 1) %>%
+  pivot_wider(names_from = pathway_cat, values_from = Value, values_fill = list(Value = 0))
+
+# Display the result
+## make the gene name the row name to make it numeric
+genes_annotated_df <- as.data.frame(genes_annotated_df)
+rownames(genes_annotated_df) <- genes_annotated_df[, 1]
+genes_annotated_df <- genes_annotated_df[, -(1)]
+
+## write to file to use in the GRN_analysis notebook
+write.table(genes_annotated_df,
+            file = paste0(output_dir, "TG_DE_genes_annotated_to_categories.txt"),
+            sep = "\t", quote = FALSE)
+
+```
+
+## make the different Venn intersections
+```{r}
+TG_GLASS_shared_up_7 <- read.delim(paste0(lncRNA_input, "TG_GLASS_shared_up_7.txt"),
+                                   header = FALSE)
+TG_GLASS_shared_down_65 <- read.delim(paste0(lncRNA_input, "TG_GLASS_shared_down_65.txt"),
+                                      header = FALSE)
+## combine them for enrichr
+TG_GLASS_shared_combined_72 <- rbind(TG_GLASS_shared_up_7, TG_GLASS_shared_down_65)
+write.xlsx(TG_GLASS_shared_combined_72,
+           paste0(output_dir, "TG_GLASS_shared_combined_72.xlsx"))
+
+all_shared_up <- read.delim(paste0(lncRNA_input, "TCGA_TG_GLASS_up.txt"),
+                            header = FALSE)
+all_shared_down <- read.delim(paste0(lncRNA_input, "TCGA_TG_GLASS_down.txt"),
+                              header = FALSE)
+all_shared <- rbind(all_shared_up, all_shared_down)
+
+## protein-coding, measured in all datasets
+TG_unique_up_pc_all <- read.delim(paste0(lncRNA_input, "TG_uniquely_up_protein_coding_measured_in_all.txt"),
+                          header = FALSE)
+TG_unique_down_pc_all <- read.delim(paste0(lncRNA_input, "TG_uniquely_down_protein_coding_measured_in_all.txt"),
+                             header = FALSE)
+TG_unique_pc_all <- rbind(TG_unique_up_pc_all, TG_unique_down_pc_all)
+
+if (websiteLive) {
+    TG_GLASS_shared_72_enriched <- enrichr(TG_GLASS_shared_combined_72[, 1], dbs)
+    TG_unique_enriched_pc_all <- enrichr(TG_unique_pc_all[, 1], dbs)
+    all_shared_enriched <- enrichr(all_shared[, 1], dbs)
+}
+
+## for the unique TG cohort genes, some of them are lncRNAs
+TG_GLASS_Reactome <- TG_GLASS_shared_72_enriched[["Reactome_2022"]]
+sig_TG_GLASS_Reactome <- TG_GLASS_Reactome[which(TG_GLASS_Reactome$Adjusted.P.value < 0.05), ]
+
+## write to file
+write.xlsx(TG_GLASS_shared_72_enriched[["Reactome_2022"]],
+           paste0(output_dir, "TG_GLASS_shared_72_enriched_pathways_DE.xlsx"))
+
+all_shared_Reactome <- all_shared_enriched[["Reactome_2022"]]
+sig_all_shared_Reactome <- all_shared_Reactome[which(all_shared_Reactome$Adjusted.P.value < 0.05), ]
+
+## write to file
+write.xlsx(all_shared_enriched[["Reactome_2022"]],
+           paste0(output_dir, "all_shared_pathways_DE.xlsx"))
+
+## for protein coding and protein coding, measured in all
+TG_unique_Reactome_pc_all <- TG_unique_enriched_pc_all[["Reactome_2022"]]
+sig_TG_unique_Reactome_pc_all <- TG_unique_Reactome_pc_all[which(TG_unique_Reactome_pc_all$Adjusted.P.value < 0.05), ]
+
+## write to file
+write.xlsx(TG_unique_enriched_pc_all[["Reactome_2022"]],
+           paste0(output_dir, "TG_unique_protein_coding_pathways_DE_measured_in_all.xlsx"))
+```
+
+## make a stacked barplot of the percentage for the different categories (Fig 1d)
+```{r}
+## read in the enrichment results
+## TG, measured in all
+TG_enriched_Reactome <- read.xlsx(paste0(output_dir, "TG_protein_coding_measured_in_all_pathways_DE.xlsx"))
+sig_TG_enriched_Reactome <- TG_enriched_Reactome[which(TG_enriched_Reactome$Adjusted.P.value < 0.05), ]
+TG_enriched_Reactome_pathway_cats <- extract_pathway_cats(sig_TG_enriched_Reactome)
+
+## TG_unique (measured in all)
+TG_unique_Reactome <- read.xlsx(paste0(output_dir, "TG_unique_protein_coding_pathways_DE_measured_in_all.xlsx"))
+sig_TG_unique_Reactome <- TG_unique_Reactome[which(TG_unique_Reactome$Adjusted.P.value < 0.05), ]
+TG_unique_Reactome_pathway_cats <- extract_pathway_cats(sig_TG_unique_Reactome)
+## TCGA, measured in all
+TCGA_enriched_Reactome <- read.xlsx(paste0(output_dir, "TCGA_protein_coding_measured_in_all_pathways.xlsx"))
+sig_TCGA_enriched_Reactome <- TCGA_enriched_Reactome[which(TCGA_enriched_Reactome$Adjusted.P.value < 0.05), ]
+TCGA_enriched_Reactome_pathway_cats <- extract_pathway_cats(sig_TCGA_enriched_Reactome)
+## GLASS, measured in all
+GLASS_enriched_Reactome <- read.xlsx(paste0(GLASS_input, "GLASS_protein_coding_measured_in_all_pathways_DE.xlsx"))
+sig_GLASS_enriched_Reactome <- GLASS_enriched_Reactome[which(GLASS_enriched_Reactome$Adjusted.P.value < 0.05), ]
+GLASS_enriched_Reactome_pathway_cats <- extract_pathway_cats(sig_GLASS_enriched_Reactome)
+## all_shared
+all_shared_Reactome <- read.xlsx(paste0(output_dir, "all_shared_pathways_DE.xlsx"))
+sig_all_shared_Reactome <- all_shared_Reactome[which(all_shared_Reactome$Adjusted.P.value < 0.05), ]
+all_shared_Reactome_pathway_cats <- extract_pathway_cats(sig_all_shared_Reactome)
+
+## TG_GLASS_shared
+TG_GLASS_shared_Reactome <- read.xlsx(paste0(output_dir, "TG_GLASS_shared_72_enriched_pathways_DE.xlsx"))
+sig_TG_GLASS_shared_Reactome <- TG_GLASS_shared_Reactome[which(TG_GLASS_shared_Reactome$Adjusted.P.value < 0.05), ]
+TG_GLASS_shared_Reactome_pathway_cats <- extract_pathway_cats(sig_TG_GLASS_shared_Reactome)
+
+## integrate the data
+merged_df <- TG_enriched_Reactome_pathway_cats %>%
+  full_join(TCGA_enriched_Reactome_pathway_cats, by = "pathway_cat", suffix = c("", "_TCGA")) %>%
+  full_join(GLASS_enriched_Reactome_pathway_cats, by = "pathway_cat", suffix = c("", "_GLASS")) %>%
+  full_join(all_shared_Reactome_pathway_cats, by = "pathway_cat", suffix = c("", "_all_shared")) %>%
+  full_join(TG_GLASS_shared_Reactome_pathway_cats, by = "pathway_cat", suffix = c("", "_TG_GLASS_shared")) %>%
+  full_join(TG_unique_Reactome_pathway_cats, by = "pathway_cat", suffix = c("", "_TG_unique"))
+
+## handle NAs
+merged_df[is.na(merged_df)] <- 0
+
+## make a separate df with just the Freq
+stacked_df <- merged_df[, c(1:2, 4, 6, 8, 10, 12)]
+
+## set categories with less than 5 pathways across all 3 to "Other"
+stacked_df$cat_frequency <- rowSums(stacked_df[, 2:7])
+
+## categories with less than 5 pathways across all 4
+## Programmed Cell Death, Muscle contraction, Sensory Perception
+## Transport of small molecules, Cell-Cell communication,
+## Cellular responses to stimuli, Reproduction,
+## Organelle biogenesis and maintenance
+## Programmed Cell Death, Developmental Biology
+
+less_than_5 <- stacked_df$cat_frequency < 5
+
+## Sum them up in the other category and make a row for it
+other_sum <- as.data.frame(t(colSums(stacked_df[less_than_5, 2:7])))
+other_sum$pathway_cat <- "Other"
+other_sum <- other_sum[, c(7, 1:6)]
+
+# Remove the original categories that were summed into "Other"
+stacked_df <- stacked_df[!less_than_5, ]
+
+# remove the cat_frequency before merging
+stacked_df <- stacked_df[, 1:7]
+
+# Add the "Other" category to the data.frame
+stacked_df <- rbind(stacked_df, other_sum)
+
+long_df <- stacked_df %>%
+  pivot_longer(cols = starts_with("Freq"),
+               names_to = "Source",
+               values_to = "Freq")
+
+color_palette_barplot <- c("#1C86EE", "#E31A1C", "#63E864",
+                      "#6A3D9A", "#FFD700", "#7EC0EE", "#4C4A4A", "#B2C5B2",
+                      "#EEE685", "#BD96D0", "#A08766", "#FFB937",
+                      "#18CA18", "#696900", "#e2e2e2")
+names(color_palette_barplot) <- c("Hemostasis", "Neuronal System",
+                             "Cell Cycle", "Disease",
+                             "DNA Repair", "Extracellular matrix organization",
+                             "Gene expression (Transcription)", "Immune System",
+                             "Metabolism of proteins", "Metabolism of RNA",
+                             "Signal Transduction",
+                             "Vesicle-mediated transport",
+                             "DNA Replication", "Metabolism", "Other")
+
+pdf(file = paste0(output_dir, "stacked_barplot_Reactome_pathway_cats_other.pdf"))
+ggplot(long_df, aes(x = Source, y = Freq, fill = pathway_cat)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = color_palette_barplot) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+dev.off()
+```
+
+## make a horizontal stacked barplot for the categories (Fig 1e)
+```{r}
+## stacking: Nr shared_all genes, Nr shared_TG_GLASS genes, Nr TG-unique genes
+
+## extract the pathways and the genes
+## read in the relevant subsets
+all_shared_up <- read.table(paste0(lncRNA_input, "TCGA_TG_GLASS_up.txt"))
+all_shared_down <- read.table(paste0(lncRNA_input, "TCGA_TG_GLASS_down.txt"))
+
+TG_GLASS_shared_up <- read.table(paste0(lncRNA_input, "TG_GLASS_shared_up_7.txt"))
+TG_GLASS_shared_down <- read.table(paste0(lncRNA_input, "TG_GLASS_shared_down_65.txt"))
+
+TG_unique_up <- read.table(paste0(lncRNA_input, "TG_uniquely_up_protein_coding_measured_in_all.txt"))
+TG_unique_down <- read.table(paste0(lncRNA_input, "TG_uniquely_down_protein_coding_measured_in_all.txt"))
+
+TG_TCGA_shared_up <- read.table(paste0(lncRNA_input, "TG_TCGA_shared_up.txt"))
+TG_TCGA_shared_down <- read.table(paste0(lncRNA_input, "TG_TCGA_shared_down.txt"))
+
+mRNA_TG_protein_coding_Reactome <- read.xlsx(paste0(output_dir, "TG_protein_coding_measured_in_all_pathways_DE.xlsx"))
+sig_mRNA_TG_protein_coding_Reactome <- mRNA_TG_protein_coding_Reactome[which(mRNA_TG_protein_coding_Reactome$Adjusted.P.value < 0.05), ]
+
+DE_genes <- RNA_sig_genes[, c(1, 3)]
+
+## extract the pathway categories first to make one bar per category
+pattern <- "R-HSA-[0-9]+"
+HSA_identifiers <- str_extract(sig_mRNA_TG_protein_coding_Reactome[, 1], pattern)
+sig_mRNA_TG_protein_coding_Reactome[, 1] <- gsub(" R-HSA.*", "", sig_mRNA_TG_protein_coding_Reactome[, 1])
+
+pathway_cat <- c()
+for (i in seq_along(sig_mRNA_TG_protein_coding_Reactome$Term)){
+  index <- sapply(pathway_identifiers, function(x) any(x == HSA_identifiers[i]))
+  if (length(which(index)) > 0) {
+  pathway_cat[i] <- names(which(index))
+  } else {
+  pathway_cat[i] <- "NA"
+  }
+}
+
+sig_mRNA_TG_protein_coding_Reactome <- cbind(sig_mRNA_TG_protein_coding_Reactome, pathway_cat)
+
+## loop through the categories, collapse them as needed
+unique_cats <- unique(sig_mRNA_TG_protein_coding_Reactome[, 10])
+## add a category for "not annotated
+unique_cats <- c(unique_cats, "not annotated")
+
+## some of the genes can be annotated to more than 1 category
+## upregulated only
+Nr_all_shared_genes_up <- c()
+Nr_TG_GLASS_shared_up <- c()
+Nr_TG_unique_up <- c()
+Nr_TG_TCGA_shared_up <- c()
+for (i in seq_len(length(unique_cats))){
+   current_cat <- unique_cats[i]
+   pathways <- sig_mRNA_TG_protein_coding_Reactome[which(sig_mRNA_TG_protein_coding_Reactome[, 10] == current_cat), ]
+   genes <- unique(unlist(strsplit(pathways[, 9], split = ";")))
+   Nr_all_shared_genes_up[i] <- sum(genes %in% all_shared_up[, 1])
+   Nr_TG_GLASS_shared_up[i] <- sum(genes %in% TG_GLASS_shared_up[, 1])
+   Nr_TG_unique_up[i] <- sum(genes %in% TG_unique_up[, 1])
+   Nr_TG_TCGA_shared_up[i] <- sum(genes %in% TG_TCGA_shared_up[, 1])
+}
+
+## downregulated only
+Nr_all_shared_genes_down <- c()
+Nr_TG_GLASS_shared_down <- c()
+Nr_TG_unique_down <- c()
+Nr_TG_TCGA_shared_down <- c()
+for (i in seq_len(length(unique_cats))){
+   current_cat <- unique_cats[i]
+   pathways <- sig_mRNA_TG_protein_coding_Reactome[which(sig_mRNA_TG_protein_coding_Reactome[, 10] == current_cat), ]
+   genes <- unique(unlist(strsplit(pathways[, 9], split = ";")))
+   Nr_all_shared_genes_down[i] <- sum(genes %in% all_shared_down[, 1])
+   Nr_TG_GLASS_shared_down[i] <- sum(genes %in% TG_GLASS_shared_down[, 1])
+   Nr_TG_unique_down[i] <- sum(genes %in% TG_unique_down[, 1])
+   Nr_TG_TCGA_shared_down[i] <- sum(genes %in% TG_TCGA_shared_down[, 1])
+}
+
+## make two plots with the same category order
+## calculate how many up- and down-regulated genes are within the categories
+all_genes <- unique(unlist(strsplit(sig_mRNA_TG_protein_coding_Reactome$Genes, split = ";")))
+## 266 genes are contributing to the pathway enrichments
+## get the distribution to up- and downregulated
+Enrichment_LFCs <- RNA_sig_genes[which(RNA_sig_genes$genes %in% all_genes), ]
+LFC_down <- sum(Enrichment_LFCs$log2FoldChange < 0) # 93 down
+LFC_up <- sum(Enrichment_LFCs$log2FoldChange > 0) # 173 up
+## add the numbers in the "not annotated category"
+## protein-coding, measured in all: 314 upregulated genes, 293 downregulated genes
+## not in any significant enrichment: 141 up, 200 down
+
+## plotting df for all upregulated genes
+plotting_df_up <- as.data.frame(cbind(unique_cats, Nr_all_shared_genes_up,
+                               Nr_TG_GLASS_shared_up, Nr_TG_unique_up,
+                               Nr_TG_TCGA_shared_up))
+## calculate the distribution of not annotated genes
+plotting_df_up[15, 2] <- sum(all_genes %in% all_shared_up[, 1])
+plotting_df_up[15, 3] <- sum(all_genes %in% TG_GLASS_shared_up[, 1])
+plotting_df_up[15, 4] <- sum(all_genes %in% TG_unique_up[, 1])
+plotting_df_up[15, 5] <- sum(all_genes %in% TG_TCGA_shared_up[, 1])
+
+## plotting df for all downregulated genes
+plotting_df_down <- as.data.frame(cbind(unique_cats, Nr_all_shared_genes_down,
+                               Nr_TG_GLASS_shared_down, Nr_TG_unique_down,
+                               Nr_TG_TCGA_shared_down))
+## calculate the distribution of not annotated genes
+plotting_df_down[15, 2] <- sum(all_genes %in% all_shared_down[, 1])
+plotting_df_down[15, 3] <- sum(all_genes %in% TG_GLASS_shared_down[, 1])
+plotting_df_down[15, 4] <- sum(all_genes %in% TG_unique_down[, 1])
+plotting_df_down[15, 5] <- sum(all_genes %in% TG_TCGA_shared_down[, 1])
+## add a negative sign for those
+plotting_df_down$Nr_all_shared_genes_down <- as.numeric(plotting_df_down$Nr_all_shared_genes_down)
+plotting_df_down$Nr_TG_GLASS_shared_down <- as.numeric(plotting_df_down$Nr_TG_GLASS_shared_down)
+plotting_df_down$Nr_TG_unique_down <- as.numeric(plotting_df_down$Nr_TG_unique_down)
+plotting_df_down$Nr_TG_TCGA_shared_down <- as.numeric(plotting_df_down$Nr_TG_TCGA_shared_down)
+plotting_df_down <- plotting_df_down %>%
+        mutate(Nr_all_shared_genes_down = -Nr_all_shared_genes_down) %>%
+        mutate(Nr_TG_GLASS_shared_down = -Nr_TG_GLASS_shared_down) %>%
+        mutate(Nr_TG_unique_down = -Nr_TG_unique_down) %>%
+        mutate(Nr_TG_TCGA_shared_down = -Nr_TG_TCGA_shared_down)
+
+df_long <- plotting_df_down %>%
+  pivot_longer(cols = starts_with("Nr_"),   # Columns to reshape
+               names_to = "Nr",             # column for the variable names
+               values_to = "Count")         # column for the values
+df_long$Count <- as.numeric(df_long$Count)
+
+df_long_2 <- plotting_df_up %>%
+  pivot_longer(cols = starts_with("Nr_"),   # Columns to reshape
+               names_to = "Nr",             # column for the variable names
+               values_to = "Count")         # column for the values
+df_long_2$Count <- as.numeric(df_long_2$Count)
+
+df_combined <- rbind(df_long, df_long_2)
+
+## order by total count
+df_combined <- df_combined %>%
+  group_by(unique_cats) %>%
+  mutate(Total = sum(Count)) %>%    # Add a column for total count
+  ungroup() %>%
+  mutate(unique_cats = fct_reorder(unique_cats, Total, .desc = FALSE))  # Reorder categories by total count
+
+## make one plot for up- and one for downregulated genes, those are distributed to shared, unique, etc.
+pdf(file = paste0(output_dir, "Stacked_barplot_shared.pdf"))
+ggplot(df_combined, aes(x = unique_cats, y = Count, fill = Nr)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(x = "Category", y = "Nr of genes", fill = "Nr") +
+  theme_classic() +
+  theme(strip.text = element_text(size = 6)) +
+  scale_fill_manual(values = c("Nr_all_shared_genes_up" = "#B3A0E6",
+                             "Nr_TG_GLASS_shared_up" = "#66C2A5",
+                             "Nr_TG_unique_up" = "#D0B44B",
+                             "Nr_TG_TCGA_shared_up" = "#2c00a7",
+                             "Nr_all_shared_genes_down" = "#B3A0E6",
+                             "Nr_TG_GLASS_shared_down" = "#66C2A5",
+                             "Nr_TG_unique_down" = "#D0B44B",
+                             "Nr_TG_TCGA_shared_down" = "#2c00a7")) +
+   geom_hline(yintercept = 0, color = "black", linewidth = 0.75) +
+   coord_flip()
+dev.off()
+```
+
+## check the overlap with the Seurat G1/S and G2/M markers
+```{r}
+G1S_genes <- c("MCM5", "PCNA", "TYMS", "FEN1", "MCM2", "MCM4", "RRM1", "UNG",
+               "GINS2", "MCM6", "CDCA7", "DTL", "PRIM1", "UHRF1", "CENPU",
+               "HELLS", "RFC2", "RPA2", "NASP", "RAD51AP1", "GMNN", "WDR76",
+               "SLBP", "CCNE2", "UBR7", "POLD3", "MSH2", "ATAD2", "RAD51",
+               "RRM2", "CDC45", "CDC6", "EXO1", "TIPIN", "DSCC1", "BLM",
+               "CASP8AP2", "USP1", "CLSPN", "POLA1", "CHAF1B", "BRIP1", "E2F8")
+
+G2M_genes <- c("HMGB2", "CDK1", "NUSAP1", "UBE2C", "BIRC5", "TPX2", "TOP2A",
+               "NDC80", "CKS2", "NUF2", "CKS1B", "MKI67", "TMPO", "CENPF",
+               "TACC3", "PIMREG", "SMC4", "CCNB2", "CKAP2L", "CKAP2", "AURKB",
+               "BUB1", "KIF11", "ANP32E", "TUBB4B", "GTSE1", "KIF20B", "HJURP",
+               "CDCA3", "JPT1", "CDC20", "TTK", "CDC25C", "KIF2C", "RANGAP1",
+               "NCAPD2", "DLGAP5", "CDCA2", "CDCA8", "ECT2", "KIF23", "HMMR",
+               "AURKA", "PSRC1", "ANLN", "LBR", "CKAP5", "CENPE", "CTCF",
+               "NEK2", "G2E3", "GAS2L3", "CBX5", "CENPA")
+
+## check how many of them are DE
+indices <- which(G1S_genes %in% DE_genes$genes)
+sum(G1S_genes %in% DE_genes$genes)
+sum(G2M_genes %in% DE_genes$genes)
+## 13 of the 43 G1/S genes are DE in TG, all of them are all_shared
+## 37 of the 54 genes are DE in TG, 34 are in all_shared
+
+## check how they go in terms of all_shared, etc.
+sum(G1S_genes %in% all_shared[, 1])
+sum(G2M_genes %in% all_shared[, 1])
+```
+
+## heatmaps for the lncRNA and miRNA targets
+```{r}
+DE_lncRNA_targets <- read.table(paste0(lncRNA_input, "all_correlating_DE_target_genes_lncRNAs_stats.txt"),
+                                header = TRUE, sep = " ")
+
+## miRNAs
+miRNA_DE_targets_no_FC <- read.delim(paste0(miRNA_input, "all_correlating_DE_target_genes_miRNAs_no_FC.txt"),
+                               header = TRUE, sep = " ")
+
+if (websiteLive) {
+    lncRNA_enriched <- enrichr(unique(DE_lncRNA_targets[, 2]), dbs)
+    miRNA_enriched <- enrichr(unique(miRNA_DE_targets_no_FC[, 2]), dbs)
+}
+
+write.table(miRNA_enriched[["Reactome_2022"]], paste0(lncRNA_input, "miRNA_pathways_DE_no_FC.txt"),
+            sep = "\t", row.names = FALSE, quote = FALSE)
+
+## check how many lncRNA target weren't measured in GLASS/TCGA
+## mark them with a star?
+TG_sig_genes_pc_measured_in_all <- read.delim(paste0(lncRNA_input, "RNA_sig_genes_coding_measured_in_all.txt"))
+targets_measured_in_all <- intersect(TG_sig_genes_pc_measured_in_all[, 1], miRNA_DE_targets_no_FC$target)
+## 78 out of 84 are measured in all
+
+lncRNA_targets_measured_in_all <- intersect(TG_sig_genes_pc_measured_in_all[, 1], DE_lncRNA_targets$target)
+## 62 out of 64 are measured in all
+
+lncRNA_targets_Reactome <- lncRNA_enriched[["Reactome_2022"]]
+sig_lncRNA_targets_Reactome <- lncRNA_targets_Reactome[which(lncRNA_targets_Reactome$Adjusted.P.value < 0.05), ]
+
+DE_genes <- RNA_sig_genes[, c(1, 3)]
+pattern <- "R-HSA-[0-9]+"
+HSA_identifiers <- str_extract(sig_lncRNA_targets_Reactome[, 1], pattern)
+sig_lncRNA_targets_Reactome[, 1] <- gsub(" R-HSA.*", "", sig_lncRNA_targets_Reactome[, 1])
+## bottom annotation
+## run a for loop to check whether the gene is in the pathway or not
+heatmap_df <- as.data.frame(matrix(nrow = dim(sig_lncRNA_targets_Reactome)[1],
+                                   ncol = dim(DE_genes)[1]))
+        colnames(heatmap_df) <- DE_genes[, 1]
+        rownames(heatmap_df) <- sig_lncRNA_targets_Reactome[, 1]
+        for (i in seq_len(dim(DE_genes)[1])) {
+        ## loop for the genes
+        gene <- DE_genes[i, 1]
+        for (j in seq_len(dim(sig_lncRNA_targets_Reactome)[1])) {
+        ## split the gene names
+        gene_names <- unlist(strsplit(sig_lncRNA_targets_Reactome[j, 9], split = ";"))
+        ## loop for the pathways
+        if (gene %in% gene_names) {
+        heatmap_df[j, i] <- "yes"
+        } else {
+        heatmap_df[j, i] <- "no"
+        }
+  }
+}
+
+## now sort out all those that only have "no"
+to_be_removed <- c()
+for (i in seq_len(dim(heatmap_df)[2])){
+        if(length(which(heatmap_df[, i] == "no")) == dim(sig_lncRNA_targets_Reactome)[1]) {
+                to_be_removed <- c(to_be_removed, i)
+        }
+}
+heatmap_df_filtered <- heatmap_df[, -(to_be_removed)]
+
+## filter for those in heatmap_df_filtered
+transcript_LFCs_filtered <- DE_genes[which(DE_genes[, 1] %in% colnames(heatmap_df_filtered)), ]
+## sort them by LFC
+transcript_LFCs_filtered <- transcript_LFCs_filtered[order(transcript_LFCs_filtered[, 2]), ]
+
+## make sure heatmap_df is sorted the same as transcript_LFCs_filtered
+new_order <- transcript_LFCs_filtered[, 1]
+heatmap_df_filtered <- heatmap_df_filtered[, order(match(colnames(heatmap_df_filtered), new_order))]
+
+## create a second annotation to indicate whether the gene is shared or not
+all_shared <- rbind(read.table(paste0(lncRNA_input, "TCGA_TG_GLASS_up.txt")),
+                    read.table(paste0(lncRNA_input, "TCGA_TG_GLASS_down.txt")))
+in_all_shared <- colnames(heatmap_df_filtered) %in% all_shared[, 1]
+
+TG_GLASS_shared <- rbind(read.table(paste0(lncRNA_input, "TG_GLASS_shared_up_7.txt")),
+                         read.table(paste0(lncRNA_input, "TG_GLASS_shared_down_65.txt")))
+in_TG_GLASS_shared <- colnames(heatmap_df_filtered) %in% TG_GLASS_shared[, 1]
+
+TG_unique <- rbind(read.table(paste0(lncRNA_input, "TG_uniquely_up_protein_coding_measured_in_all.txt")),
+                   read.table(paste0(lncRNA_input, "TG_uniquely_down_protein_coding_measured_in_all.txt")))
+in_TG_unique <- colnames(heatmap_df_filtered) %in% TG_unique[, 1]
+
+# create another top annotation for target of CYTOR/NEAT1
+CYTOR_targets <- DE_lncRNA_targets[which(DE_lncRNA_targets[, 1] == "CYTOR"), ]
+target_of_CYTOR <- colnames(heatmap_df_filtered) %in% CYTOR_targets[, 2]
+NEAT1_targets <- DE_lncRNA_targets[which(DE_lncRNA_targets[, 1] == "NEAT1"), ]
+target_of_NEAT1 <- colnames(heatmap_df_filtered) %in% NEAT1_targets[, 2]
+PVT1_targets <- DE_lncRNA_targets[which(DE_lncRNA_targets[, 1] == "PVT1"), ]
+target_of_PVT1 <- colnames(heatmap_df_filtered) %in% PVT1_targets[, 2]
+
+target_col <- c("#FFFFFF", "#FFE18F")
+names(target_col) <- c("FALSE", "TRUE")
+top_anno <- HeatmapAnnotation(PVT1_target = target_of_PVT1,
+                              CYTOR_target = target_of_CYTOR,
+                              NEAT1_target = target_of_NEAT1,
+                              col = list(PVT1_target = target_col,
+                                         CYTOR_target = target_col,
+                                         NEAT1_target = target_col),
+  # Additional settings
+  show_legend = FALSE,
+  show_annotation_name = TRUE,
+  annotation_name_side = "left"
+)
+
+## the bottom annotation is a barplot
+LFC_anno <- c("#00b7d7", "#d5d3d3", "#f83479")
+bar_col <- c(rep("#00b7d7", length(which(transcript_LFCs_filtered[, 2] < 0))),
+             rep("#f83479", length(which(transcript_LFCs_filtered[, 2] >= 0))))
+shared_col <- c("#FFFFFF", "#d5d3d3")
+names(shared_col) <- c("FALSE", "TRUE")
+
+bottom_anno_3 <- HeatmapAnnotation(log2FC = anno_barplot(transcript_LFCs_filtered[, 2],
+                                             baseline = 0,
+                                             gp = gpar(fontsize = 10, col = bar_col, fill = bar_col),
+                                             height = unit(1.5, "cm")),
+                                    DE_in_all_shared = in_all_shared,  # Adjust the height
+                                    DE_in_TG_GLASS_shared = in_TG_GLASS_shared,
+                                    DE_in_TG_unique = in_TG_unique,
+                                    col = list(DE_in_all_shared = shared_col,
+                                               DE_in_TG_GLASS_shared = shared_col,
+                                               DE_in_TG_unique = shared_col),
+  # Additional settings
+  show_legend = FALSE,
+  show_annotation_name = TRUE,
+  annotation_name_side = "left"
+)
+
+## create the annotation for the pathway category
+pathway_cat <- c()
+for (i in seq_along(sig_lncRNA_targets_Reactome$Term)){
+  index <- sapply(pathway_identifiers, function(x) any(x == HSA_identifiers[i]))
+  if (length(which(index)) > 0) {
+  pathway_cat[i] <- names(which(index))
+  } else {
+  pathway_cat[i] <- "NA"
+  }
+}
+
+## reorder the heatmap_df_filtered based on the category
+## extract the set size
+## attach and reoder by category, then by set size
+set_size <- as.numeric(str_split_fixed(sig_lncRNA_targets_Reactome$Overlap, "/", 2)[, 2])
+heatmap_df_filtered <- cbind(heatmap_df_filtered, pathway_cat, set_size)
+heatmap_df_filtered <- heatmap_df_filtered[order(heatmap_df_filtered$pathway_cat, -heatmap_df_filtered$set_size), ]
+
+## make the annotation before removing the row
+color_palette_pathways <- color_palette_25[names(color_palette_25) %in% unique(pathway_cat)]
+left_anno <- rowAnnotation(pathway = heatmap_df_filtered$pathway_cat,
+                           col = list(pathway = color_palette_pathways))
+
+heatmap_df_filtered <- heatmap_df_filtered[, -(which(colnames(heatmap_df_filtered) == "pathway_cat"))]
+heatmap_df_filtered <- heatmap_df_filtered[, -(which(colnames(heatmap_df_filtered) == "set_size"))]
+
+## reoder the sig_enrichment results to match the heatmap_df
+sig_enrichment_results <- sig_lncRNA_targets_Reactome[order(match(sig_lncRNA_targets_Reactome[, 1], rownames(heatmap_df_filtered))), ]
+## paste the overlap together
+new_names <- paste0(sig_enrichment_results[, 1], " (", sig_enrichment_results[, 2], ")")
+rownames(heatmap_df_filtered) <- new_names
+
+## right annotation
+        odds_col <- colorRamp2(c(0, round(max(sig_enrichment_results[, 7])) + 1), c("#d5d3d3", "#390347b2"))
+        rounding_value <- 100
+        FDR_log10 <- -log10(sig_enrichment_results[, 4])
+        p_adj_col <- colorRamp2(c(0, max(FDR_log10)), c("#d5d3d3", "#ac2500b2"))
+        max_combined_score <- ceiling(max(sig_enrichment_results[, 8]) / rounding_value) * rounding_value
+        combined_score_col <- colorRamp2(c(0, 1200), c("#d5d3d3", "#014700b2"))
+        right_annot <- rowAnnotation(odds_ratio = sig_enrichment_results[, 7],
+                                     log10_FDR = FDR_log10,
+                                     combined_score = sig_enrichment_results[, 8],
+                                     col = list(odds_ratio = odds_col,
+                                                log10_FDR = p_adj_col,
+                                                combined_score = combined_score_col))
+
+## plotting the heatmap
+heatmap_col <- c("#FFFFFF", "#d5d3d3")
+names(heatmap_col) <- c("no", "yes")
+pdf(file = paste0(output_dir, "lncRNA_target_enrichment_Reactome_filtered.pdf"),
+    height = 5, width = 15)
+print(Heatmap(heatmap_df_filtered, top_annotation = top_anno,
+        bottom_annotation = bottom_anno_3,
+        right_annotation = right_annot, col = heatmap_col,
+        left_annotation = left_anno,
+        cluster_rows = FALSE, cluster_columns = FALSE,
+        row_names_side = "left",
+        column_names_gp = grid::gpar(fontsize = 5),
+        row_names_gp = grid::gpar(fontsize = 3),
+        heatmap_legend_param = list(
+        title = "part of the pathway")))
+dev.off()
+
+miRNA_targets_Reactome <- miRNA_enriched[["Reactome_2022"]]
+sig_miRNA_targets_Reactome <- miRNA_targets_Reactome[which(miRNA_targets_Reactome$Adjusted.P.value < 0.05), ]
+
+pattern <- "R-HSA-[0-9]+"
+HSA_identifiers <- str_extract(sig_miRNA_targets_Reactome[, 1], pattern)
+sig_miRNA_targets_Reactome[, 1] <- gsub(" R-HSA.*", "", sig_miRNA_targets_Reactome[, 1])
+## bottom annotation
+## run a for loop to check whether the gene is in the pathway or not
+heatmap_df <- as.data.frame(matrix(nrow = dim(sig_miRNA_targets_Reactome)[1],
+                                   ncol = dim(DE_genes)[1]))
+        colnames(heatmap_df) <- DE_genes[, 1]
+        rownames(heatmap_df) <- sig_miRNA_targets_Reactome[, 1]
+        for (i in seq_len(dim(DE_genes)[1])) {
+        ## loop for the genes
+        gene <- DE_genes[i, 1]
+        for (j in seq_len(dim(sig_miRNA_targets_Reactome)[1])) {
+        ## split the gene names
+        gene_names <- unlist(strsplit(sig_miRNA_targets_Reactome[j, 9], split = ";"))
+        ## loop for the pathways
+        if (gene %in% gene_names) {
+        heatmap_df[j, i] <- "yes"
+        } else {
+        heatmap_df[j, i] <- "no"
+        }
+  }
+}
+
+## now sort out all those that only have "no"
+to_be_removed <- c()
+for (i in seq_len(dim(heatmap_df)[2])){
+        if(length(which(heatmap_df[, i] == "no")) == dim(sig_miRNA_targets_Reactome)[1]) {
+                to_be_removed <- c(to_be_removed, i)
+        }
+}
+heatmap_df_filtered <- heatmap_df[, -(to_be_removed)]
+
+## filter for those in heatmap_df_filtered
+transcript_LFCs_filtered <- DE_genes[which(DE_genes[, 1] %in% colnames(heatmap_df_filtered)), ]
+## sort them by LFC
+transcript_LFCs_filtered <- transcript_LFCs_filtered[order(transcript_LFCs_filtered[, 2]), ]
+
+## make sure heatmap_df is sorted the same as transcript_LFCs_filtered
+new_order <- transcript_LFCs_filtered[, 1]
+heatmap_df_filtered <- heatmap_df_filtered[, order(match(colnames(heatmap_df_filtered), new_order))]
+
+## create a second annotation to indicate whether the gene is shared or not
+in_all_shared <- colnames(heatmap_df_filtered) %in% all_shared[, 1]
+in_TG_GLASS_shared <- colnames(heatmap_df_filtered) %in% TG_GLASS_shared[, 1]
+in_TG_unique <- colnames(heatmap_df_filtered) %in% TG_unique[, 1]
+
+# create another top annotation for target of let7b, 15b
+let7_targets <- miRNA_DE_targets_no_FC[which(miRNA_DE_targets_no_FC[, 1] == "hsa-let-7b-3p"), ]
+target_of_let7 <- colnames(heatmap_df_filtered) %in% let7_targets[, 2]
+mir15b_targets <- miRNA_DE_targets_no_FC[which(miRNA_DE_targets_no_FC[, 1] == "hsa-miR-15b-5p"), ]
+target_of_15b <- colnames(heatmap_df_filtered) %in% mir15b_targets[, 2]
+
+# based on the score, the third one should be hsa-miR-301b-3p
+mir301b_targets <- miRNA_DE_targets_no_FC[which(miRNA_DE_targets_no_FC[, 1] == "hsa-miR-301b-3p"), ]
+target_of_301b <- colnames(heatmap_df_filtered) %in% mir301b_targets[, 2]
+
+## create a top annotation with the most important miRNAs
+top_anno <- HeatmapAnnotation(let7_target = target_of_let7,
+                              mir15b_target = target_of_15b,
+                              mir301b_target = target_of_301b,
+                              col = list(let7_target = target_col,
+                                         mir15b_target = target_col,
+                                         mir301b_target = target_col),
+  # Additional settings
+  show_legend = FALSE,
+  show_annotation_name = TRUE,
+  annotation_name_side = "left"
+)
+
+## the bottom annotation is a barplot
+LFC_anno <- c("#00b7d7", "#d5d3d3", "#f83479")
+bar_col <- c(rep("#00b7d7", length(which(transcript_LFCs_filtered[, 2] < 0))),
+             rep("#f83479", length(which(transcript_LFCs_filtered[, 2] >= 0))))
+shared_col <- c("#FFFFFF", "#d5d3d3")
+names(shared_col) <- c("FALSE", "TRUE")
+
+bottom_anno_3 <- HeatmapAnnotation(log2FC = anno_barplot(transcript_LFCs_filtered[, 2],
+                                             baseline = 0,
+                                             gp = gpar(fontsize = 10, col = bar_col, fill = bar_col),
+                                             height = unit(1.5, "cm")),
+                                    DE_in_all_shared = in_all_shared,  # Adjust the height
+                                    DE_in_TG_GLASS_shared = in_TG_GLASS_shared,
+                                    DE_in_TG_unique = in_TG_unique,
+                                    col = list(DE_in_all_shared = shared_col,
+                                               DE_in_TG_GLASS_shared = shared_col,
+                                               DE_in_TG_unique = shared_col),
+  # Additional settings
+  show_legend = FALSE,
+  show_annotation_name = TRUE,
+  annotation_name_side = "left"
+)
+
+## create the annotation for the pathway category
+pathway_cat <- c()
+for (i in seq_along(sig_miRNA_targets_Reactome$Term)){
+  index <- sapply(pathway_identifiers, function(x) any(x == HSA_identifiers[i]))
+  if (length(which(index)) > 0) {
+  pathway_cat[i] <- names(which(index))
+  } else {
+  pathway_cat[i] <- "NA"
+  }
+}
+
+## reorder the heatmap_df_filtered based on the category
+## attach, order, replot
+## extract the set size
+## attach and reoder by category, then by set size
+set_size <- as.numeric(str_split_fixed(sig_miRNA_targets_Reactome$Overlap, "/", 2)[, 2])
+heatmap_df_filtered <- cbind(heatmap_df_filtered, pathway_cat, set_size)
+heatmap_df_filtered <- heatmap_df_filtered[order(heatmap_df_filtered$pathway_cat, -heatmap_df_filtered$set_size), ]
+
+## make the annotation before removing the row
+color_palette_pathways <- color_palette_25[names(color_palette_25) %in% unique(pathway_cat)]
+left_anno <- rowAnnotation(pathway = heatmap_df_filtered$pathway_cat,
+                           col = list(pathway = color_palette_pathways))
+
+heatmap_df_filtered <- heatmap_df_filtered[, -(which(colnames(heatmap_df_filtered) == "pathway_cat"))]
+heatmap_df_filtered <- heatmap_df_filtered[, -(which(colnames(heatmap_df_filtered) == "set_size"))]
+
+## reoder the sig_enrichment results to match the heatmap_df
+sig_enrichment_results <- sig_miRNA_targets_Reactome[order(match(sig_miRNA_targets_Reactome[, 1], rownames(heatmap_df_filtered))), ]
+## paste the overlap together
+new_names <- paste0(sig_enrichment_results[, 1], " (", sig_enrichment_results[, 2], ")")
+rownames(heatmap_df_filtered) <- new_names
+
+## right annotation
+        odds_col <- colorRamp2(c(0, round(max(sig_enrichment_results[, 7])) + 1), c("#d5d3d3", "#390347b2"))
+        rounding_value <- 100
+        FDR_log10 <- -log10(sig_enrichment_results[, 4])
+        p_adj_col <- colorRamp2(c(0, max(FDR_log10)), c("#d5d3d3", "#ac2500b2"))
+        max_combined_score <- ceiling(max(sig_enrichment_results[, 8]) / rounding_value) * rounding_value
+        combined_score_col <- colorRamp2(c(0, 1200), c("#d5d3d3", "#014700b2"))
+        right_annot <- rowAnnotation(odds_ratio = sig_enrichment_results[, 7],
+                                     log10_FDR = FDR_log10,
+                                     combined_score = sig_enrichment_results[, 8],
+                                     col = list(odds_ratio = odds_col,
+                                                log10_FDR = p_adj_col,
+                                                combined_score = combined_score_col))
+
+## plotting the heatmap
+heatmap_col <- c("#FFFFFF", "#d5d3d3")
+names(heatmap_col) <- c("no", "yes")
+pdf(file = paste0(output_dir, "miRNA_target_enrichment_Reactome_filtered.pdf"),
+    height = 5, width = 15)
+print(Heatmap(heatmap_df_filtered, top_annotation = top_anno,
+        bottom_annotation = bottom_anno_3,
+        right_annotation = right_annot, col = heatmap_col,
+        left_annotation = left_anno,
+        cluster_rows = FALSE, cluster_columns = FALSE,
+        row_names_side = "left",
+        column_names_gp = grid::gpar(fontsize = 5),
+        row_names_gp = grid::gpar(fontsize = 3),
+        heatmap_legend_param = list(
+        title = "part of the pathway")))
+dev.off()
+```
+
+## analyse the CNA data for TCGA and GLASS (Supplementary Tables S8, S9, S14, S15)
+The data was downloaded from cBioPortal on 05.11.24, using the merged TCGA-GBM and TCGA-LGG cohort (Cecharelli et al 2016)
+Also GLASS (from synapse.org) was used
+```{r}
+## read in the file
+TCGA_CNAs <- read.delim(paste0(lncRNA_input, "TCGA comparison/TCGA_ncRNA_CNAs.txt"))
+
+## filter for the ones with WHO2021 classification
+TCGA_2021_classification <- read.table("C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/TCGA_WHO_2021_classification.txt",
+                                       sep = "\t", header = TRUE)
+## remove the last three characters from the TCGA_GLASS_CNAs
+TCGA_CNAs$SAMPLE_ID <- substr(TCGA_CNAs$SAMPLE_ID, 1, nchar(TCGA_CNAs$SAMPLE_ID) - 3)
+
+TCGA_CNAs_2021 <- TCGA_CNAs[TCGA_CNAs$SAMPLE_ID %in% TCGA_2021_classification$sample, ]
+colSums(TCGA_CNAs_2021[, 2:74], na.rm = TRUE)
+
+only_na_cols <- apply(TCGA_CNAs_2021, 2, function(column) all(is.na(column)))
+## 32 columns have only NAs
+which(only_na_cols == TRUE)
+TCGA_CNAs_2021 <- TCGA_CNAs_2021[, -(which(only_na_cols == TRUE))]
+rownames(TCGA_CNAs_2021) <- TCGA_CNAs_2021$SAMPLE_ID
+TCGA_CNAs_2021 <- TCGA_CNAs_2021[, - c(1,2)]
+
+distributions <- apply(TCGA_CNAs_2021, 2, function(col) table(factor(col, levels = -2:2)))
+distributions <- as.data.frame(t(distributions))
+write.xlsx(distributions, file = paste0(lncRNA_input, "CNA_distribution_TCGA.xlsx"),
+           rowNames = TRUE)
+
+## get the n-numbers for all the samples
+TCGA_2021_CNAs_diagnoses <- TCGA_2021_classification[which(TCGA_2021_classification$sample %in% rownames(TCGA_CNAs_2021)), ]
+table(TCGA_2021_CNAs_diagnoses$IDH_codel_grade)
+# oligo gr2: 81, oligo gr3: 70
+# astro gr2: 107, gr3: 97, gr4: 27
+# GB gr4: 330
+
+
+## for all CNAs loop through and get the distributions of samples to subgroups
+subgroup_distributions_result <- list()
+for (gene in colnames(TCGA_CNAs_2021)){
+  subgroup_distributions_temp <- list()
+  gene_index <- which(colnames(TCGA_CNAs_2021) == gene)
+  for (level in c(-2, -1, 1, 2)) {
+  # Get indices of samples with CNA
+  
+  sample_names <- rownames(TCGA_CNAs_2021)[which(TCGA_CNAs_2021[, gene_index] == level)]
+  
+  # Get the corresponding diagnoses
+  sample_indices <- which(TCGA_2021_classification$sample %in% sample_names)
+  temp_subgroup <- TCGA_2021_classification$IDH_codel_grade[sample_indices]
+  
+  # Calculate the distribution of diagnoses
+  subgroup_distribution <- table(temp_subgroup)
+  
+  # Store the results
+  subgroup_distributions_temp[[as.character(level)]] <- subgroup_distribution
+  }
+  # Combine results for the current gene into a data frame
+  gene_df <- do.call(rbind, lapply(subgroup_distributions_temp, as.data.frame))
+  
+  # Add the gene name as a column
+  gene_df$Gene <- gene
+  
+  # Store the result in the main list
+  subgroup_distributions_result[[gene]] <- gene_df
+}
+
+final_results_df <- do.call(rbind, subgroup_distributions_result)
+
+## GLASS only contains mutations, not CNAs
+## GLASS CNAs were obtained from synapse.org
+## read in
+GLASS_CNAs <- read.delim(paste0(GLASS_input, "/variants_gene_copy_number.csv/variants_gene_copy_number.csv"),
+                         sep = ",")
+## filter for the DE lncRNAs
+DE_lncRNAs_all <- c("CRNDE", "MIR4435-2HG", "LINC01088", "CYTOR", "FBXL19-AS1",
+                    "NEAT1", "PVT1", "WDFY3-AS2", "HAGLR", "NRG3-AS1", "COLCA1",
+                    "RMST", "DUXAP8", "LINC00842", "LINC00844", "DISC1-IT1",
+                    "ARHGEF26-AS1", "RNF219-AS1", "FAM167A-AS1", "PCDH9-AS3",
+                    "LINC01224", "FAM225A", "DNMBP-AS1", "LINC00624", "FAM225B",
+                    "LINC01094", "LINC00648", "LNX1-AS1", "LINC01736",
+                    "FAM155A-IT1", "LINC00836", "GTSCR1", "FAM95B1",
+                    "LINC01241", "WDR11-AS1", "SOX5-AS1", "KCNIP4-IT1",
+                    "SMC2-AS1", "EDNRB-AS1", "PWAR1")
+GLASS_CNAs <- GLASS_CNAs[which(GLASS_CNAs$gene_symbol %in% DE_lncRNAs_all), ]
+## write to file, as the basis file is super large
+## write.xlsx(GLASS_CNAs, file = paste0(GLASS_input, "GLASS_CNAs_lncRNAs.xlsx"))
+GLASS_CNAs <- read.xlsx(paste0(GLASS_input, "GLASS_CNAs_lncRNAs.xlsx"))
+## GLSS-MD-0027-R1 and GLSS-MD-0027-TP seem to have two sequencing rounds
+## remove the WXS sample
+GLASS_CNAs <- GLASS_CNAs[-grep("GLSS-MD-0027-R1-01D-WXS", GLASS_CNAs$aliquot_barcode), ]
+GLASS_CNAs <- GLASS_CNAs[-grep("GLSS-MD-0027-TP-01D-WXS", GLASS_CNAs$aliquot_barcode), ]
+## filter for the GLASS cases
+GLASS_info <- read.delim(paste0(GLASS_input, "GLASS_RNA_seq_info_R.txt"),
+                          sep = "\t")
+## remove the GLSS-HK-0002-TP and GLSS.SF.0003 (only TMZ before progression)
+GLASS_info <- GLASS_info[-(grep("GLSS-SF-0003", GLASS_info$case_barcode)), ]
+## filter the CNA calls
+## remove the last 15 characters
+GLASS_CNAs$aliquot_barcode <- substr(GLASS_CNAs$aliquot_barcode, 1, nchar(GLASS_CNAs$aliquot_barcode) - 15)
+GLASS_CNAs <- GLASS_CNAs[GLASS_CNAs$aliquot_barcode %in% GLASS_info$sample_barcode, ]
+
+## separate the two additional gr3 samples that are there
+## GLSS-HF-4F0A-R1 (gr3)
+GLSS_HF_4F0A_R1 <- GLASS_CNAs[grep("GLSS-HF-4F0A-R1", GLASS_CNAs$aliquot_barcode), ]
+## GLSS-MD-0027-R1 (gr3)
+GLSS_MD_0027_R1 <- GLASS_CNAs[grep("GLSS-MD-0027-R1", GLASS_CNAs$aliquot_barcode), ]
+
+## remove them from the main list
+GLASS_CNAs <- GLASS_CNAs[-grep("GLSS-HF-4F0A-R1", GLASS_CNAs$aliquot_barcode), ]
+GLASS_CNAs <- GLASS_CNAs[-grep("GLSS-MD-0027-R1", GLASS_CNAs$aliquot_barcode), ]
+
+GLASS_cases_with_CNAs <- GLASS_info[which(GLASS_info$sample_barcode %in% GLASS_CNAs$aliquot_barcode), ]
+
+## probably a table command will be fine
+distributions <- list()
+for (gene in unique(GLASS_CNAs$gene_symbol)){
+  gene_data <- GLASS_CNAs[which(GLASS_CNAs$gene_symbol == gene), ]
+  distributions[[gene]] <- table(factor(gene_data$hlvl_call, levels = -2:2))
+}
+distributions_df <- do.call(rbind, lapply(distributions, function(x) data.frame(matrix(x, nrow = 1, byrow = TRUE))))
+colnames(distributions_df) <- c("-2", "-1", "0", "1", "2")
+write.xlsx(distributions_df, paste0(GLASS_input, "lncRNA_CNAs_GLASS.xlsx"),
+           rowNames = TRUE)
+# GLSS-MD-0027 has a splice variant in LNX1-AS1 in R2
+
+## for all CNAs loop through and get the distributions of samples to subgroups
+subgroup_distributions_result <- list()
+for (gene in rownames(distributions_df)){
+  subgroup_distributions_temp <- list()
+  gene_data <- GLASS_CNAs[which(GLASS_CNAs$gene_symbol == gene), ]
+  for (level in c(-2, -1, 1, 2)) {
+  # Get indices of samples with CNA
+  
+  sample_names <- gene_data[which(gene_data$hlvl_call == level), 1]
+  if (length(sample_names) > 0){
+  # Get the corresponding diagnoses
+  sample_indices <- which(GLASS_info$sample_barcode %in% sample_names)
+  temp_subgroup <- GLASS_info$grade[sample_indices]
+  
+  # Calculate the distribution of diagnoses
+  subgroup_distribution <- table(temp_subgroup)
+  
+  # Store the results
+  subgroup_distributions_temp[[as.character(level)]] <- subgroup_distribution
+  }
+  # Combine results for the current gene into a data frame
+  gene_df <- do.call(rbind, lapply(subgroup_distributions_temp, as.data.frame))
+  
+  # Add the gene name as a column
+  gene_df$Gene <- gene
+  
+  # Store the result in the main list
+  subgroup_distributions_result[[gene]] <- gene_df
+  }
+}
+
+## For miRNA genes
+## reread the CNAs
+GLASS_CNAs <- read.delim(paste0(GLASS_input, "/variants_gene_copy_number.csv/variants_gene_copy_number.csv"),
+                         sep = ",")
+
+miRNA_gene_names <- c("MIRLET7B", "MIR342", "MIR383", "MIR708", "MIR210",
+                      "MIR196B", "MIR130B", "MIR301B", "MIR18A", "MIR15B",
+                      "MIR187", "MIR199A", "MIR199B", "MIR6500", "MIR4421",
+                      "MIR4717", "MIR3121", "MIR4741", "MIR4746", "MIR548BA",
+                      "MIR548AB", "MIR7702", "MIR216A", "MIR489", "MIR505",
+                      "MIR92B", "MIR199B", "MIR1298", "MIR1286", "MIR4662A",
+                      "MIR10527")
+
+## filter for the miRNA genes
+GLASS_CNAs <- GLASS_CNAs[which(GLASS_CNAs$gene_symbol %in% miRNA_gene_names), ]
+## filter for the samples
+## remove the WXS samples
+GLASS_CNAs <- GLASS_CNAs[-grep("GLSS-MD-0027-R1-01D-WXS", GLASS_CNAs$aliquot_barcode), ]
+GLASS_CNAs <- GLASS_CNAs[-grep("GLSS-MD-0027-TP-01D-WXS", GLASS_CNAs$aliquot_barcode), ]
+
+GLASS_CNAs$aliquot_barcode <- substr(GLASS_CNAs$aliquot_barcode, 1, nchar(GLASS_CNAs$aliquot_barcode) - 15)
+GLASS_CNAs <- GLASS_CNAs[GLASS_CNAs$aliquot_barcode %in% GLASS_info$sample_barcode, ]
+
+## put to xlsx
+write.table(GLASS_CNAs, file = paste0(GLASS_input, "GLASS_CNAs_miRNAs.xlsx"))
+
+## separate the two additional gr3 samples that are there
+## GLSS-HF-4F0A-R1 (gr3)
+GLSS_HF_4F0A_R1 <- GLASS_CNAs[grep("GLSS-HF-4F0A-R1", GLASS_CNAs$aliquot_barcode), ]
+## GLSS-MD-0027-R1 (gr3)
+GLSS_MD_0027_R1 <- GLASS_CNAs[grep("GLSS-MD-0027-R1", GLASS_CNAs$aliquot_barcode), ]
+
+## remove them from the main list
+GLASS_CNAs <- GLASS_CNAs[-grep("GLSS-HF-4F0A-R1", GLASS_CNAs$aliquot_barcode), ]
+GLASS_CNAs <- GLASS_CNAs[-grep("GLSS-MD-0027-R1", GLASS_CNAs$aliquot_barcode), ]
+
+distributions <- list()
+for (gene in unique(GLASS_CNAs$gene_symbol)){
+  gene_data <- GLASS_CNAs[which(GLASS_CNAs$gene_symbol == gene), ]
+  distributions[[gene]] <- table(factor(gene_data$hlvl_call, levels = -2:2))
+}
+distributions_df <- do.call(rbind, lapply(distributions, function(x) data.frame(matrix(x, nrow = 1, byrow = TRUE))))
+colnames(distributions_df) <- c("-2", "-1", "0", "1", "2")
+write.xlsx(distributions_df, paste0(GLASS_input, "miRNA_CNAs_GLASS.xlsx"),
+           rowNames = TRUE)
+# GLSS-MD-0027 has a splice variant in LNX1-AS1 in R2
+
+## for all CNAs loop through and get the distributions of samples to subgroups
+subgroup_distributions_result <- list()
+for (gene in rownames(distributions_df)){
+  subgroup_distributions_temp <- list()
+  gene_data <- GLASS_CNAs[which(GLASS_CNAs$gene_symbol == gene), ]
+  for (level in c(-2, -1, 1, 2)) {
+  # Get indices of samples with CNA
+  
+  sample_names <- gene_data[which(gene_data$hlvl_call == level), 1]
+  if (length(sample_names) > 0){
+    # Get the corresponding diagnoses
+    sample_indices <- which(GLASS_info$sample_barcode %in% sample_names)
+    temp_subgroup <- GLASS_info$grade[sample_indices]
+  
+    # Calculate the distribution of diagnoses
+    subgroup_distribution <- table(temp_subgroup)
+  
+   # Store the results
+    subgroup_distributions_temp[[as.character(level)]] <- subgroup_distribution
+   }
+  # Combine results for the current gene into a data frame
+  gene_df <- do.call(rbind, lapply(subgroup_distributions_temp, as.data.frame))
+  
+  # Add the gene name as a column
+  gene_df$Gene <- gene
+  
+  # Store the result in the main list
+  subgroup_distributions_result[[gene]] <- gene_df
+  }
+}
+
+final_results_df <- do.call(rbind, subgroup_distributions_result)
+```
+
+## make violin plots from the TCGA for selected lncRNAs (Fig 2d, Fig S2e)
+```{r}
+## read in the object normalised with all subtypes
+norm_counts_diffuse_astros <- read.delim(paste0(miRNA_input, "TCGA_norm_counts_GBMs_oligos_included.txt"))
+## exclude the ones without gene symbols
+norm_counts_with_symbol <- norm_counts_diffuse_astros[- which(is.na(norm_counts_diffuse_astros$SYMBOL) == TRUE), ]
+
+## filter for the wanted genes
+genes <- c("CYTOR", "NEAT1", "PVT1", "NRG3-AS1", "NRG3")
+lncRNAs_TCGA <- norm_counts_with_symbol[which(norm_counts_with_symbol$SYMBOL %in% genes), ]
+rownames(lncRNAs_TCGA) <- lncRNAs_TCGA$SYMBOL
+
+## read in the CNA data
+TCGA_CNAs <- read.delim(paste0(lncRNA_input, "TCGA comparison/TCGA_ncRNA_CNAs.txt"))
+rownames(TCGA_CNAs) <- TCGA_CNAs$SAMPLE_ID
+## filter for the respective genes
+lncRNA_CNAs <- TCGA_CNAs[, which(colnames(TCGA_CNAs) %in% genes)]
+## replace the "-" with "."
+rownames(lncRNA_CNAs) <- gsub("-", ".", rownames(lncRNA_CNAs))
+## filter for the ones with RNA-seq data
+colnames(lncRNAs_TCGA) <- substr(colnames(lncRNAs_TCGA), 1, nchar(colnames(lncRNAs_TCGA)) - 13)
+lncRNA_CNAs <- lncRNA_CNAs[rownames(lncRNA_CNAs) %in% colnames(lncRNAs_TCGA), ]
+
+## transform to log2
+## remove the ENSG and SYMBOL columns for the log2 transformation
+lncRNAs_TCGA <- lncRNAs_TCGA[, -c(1, 596)]
+lncRNAs_TCGA <- log2(lncRNAs_TCGA + 1)
+## also need the files whether they are grade 2 or grade 3
+TCGA_classification <- read.delim(paste0(miRNA_input, "TCGA_classification_for_violins_all_tumors.txt"),
+                                  sep = "\t")
+
+## make the violin plots
+plotting_df <- lncRNAs_TCGA %>%
+  rownames_to_column(var = "gene") %>%
+  pivot_longer(cols = -gene, names_to = "sample", values_to = "counts")
+
+## edit the sample ID for the merging
+TCGA_classification$sample <- substr(TCGA_classification$sample, 1, nchar(TCGA_classification$sample) - 13)
+TCGA_classification$sample <- gsub("-", ".", TCGA_classification$sample)
+
+merged_data <- plotting_df %>%
+  left_join(TCGA_classification, by = "sample")
+
+## filter out all recurrent ones
+merged_data <- merged_data[-which(merged_data$primary_recurrent == "recurrent"), ]
+
+# reformat the CNA data
+lncRNA_CNAs_long <- pivot_longer(lncRNA_CNAs,
+                                 cols = everything(), names_to = "gene", values_to = "CNA")
+lncRNA_CNAs_long$sample <- rep(rownames(lncRNA_CNAs), each = ncol(lncRNA_CNAs))
+
+merged_CNAs <- merged_data %>%
+  left_join(lncRNA_CNAs_long, by = c("sample", "gene"))
+
+## drop any NAs in the idh_codel_subtype plot
+plotting_df <- drop_na(merged_CNAs, IDH_codel_grade)
+
+plotting_df <- unique(plotting_df)
+
+## set the colours:
+custom_colors <- c("-1" = "#505097", "0" = "black", "1" = "#e93a3a",
+                   "2" = "#a00606", "NA" = "#b1b0af")
+
+for (i in seq_along(genes)){
+  subdata <- plotting_df[which(plotting_df$gene == genes[i]), ]
+  subdata$counts <- as.numeric(subdata$counts)
+  stat.test.grade <- subdata[subdata$idh_codel_subtype %in% c("IDHmut-codel", "IDHmut-non-codel"),] %>% group_by(idh_codel_subtype) %>% wilcox_test(counts ~ IDH_codel_grade)
+  stat.test <- subdata %>% wilcox_test(counts ~ idh_codel_subtype)
+  ## write them to file as well
+  write.table(stat.test.grade, file = paste0(output_dir, genes[i], "_grade_test.txt"),
+              quote = FALSE, row.names = FALSE)
+  write.table(stat.test, file = paste0(output_dir, genes[i], "_subtype_test.txt"),
+              quote = FALSE, row.names = FALSE)
+  filename <- paste0(output_dir, genes[i], "_TCGA_violin_plot_IDHmut_astros.pdf")
+  pdf(file = filename)
+  p <- ggplot(subdata, aes(x = IDH_codel_grade, y = counts)) +
+        geom_violin() +
+        geom_jitter(aes(color = as.factor(CNA)), width = 0.2, alpha = 0.5) +  # Optional jitter for visibility
+        theme_classic() +
+        scale_color_manual(values = custom_colors) +
+        labs(x = genes[i], y = "Log2 normalized counts") +
+        theme(axis.text = element_text(angle = 45))
+  
+  p_sig <- p + stat_pvalue_manual(stat.test, label = "p.adj.signif", y.position = 10, hide.ns = TRUE)
+  p_sig_grade <- p + stat_pvalue_manual(stat.test.grade, label = "p.adj.signif", y.position = 10, hide.ns = TRUE)
+  print(p_sig)
+  print(p_sig_grade)
+  dev.off()
+}
+
+## the data needs to be in the following format: 
+## column is the gene
+## IDHwt is not included as there are is only grade 4
+
+## do the boxplots to check for association between CNA and RNA-seq expression
+CNA_genes <- c("CYTOR", "NEAT1", "PVT1")
+
+for (i in seq_along(CNA_genes)){
+  subdata <- plotting_df[which(plotting_df$gene == CNA_genes[i]), ]
+  subdata$counts <- as.numeric(subdata$counts)
+  stat.test <- subdata %>% group_by(idh_codel_subtype) %>% wilcox_test(counts ~ CNA)
+  ## write them to file as well
+  write.table(stat.test, file = paste0(output_dir, CNA_genes[i], "_CNA_association_test.txt"),
+              quote = FALSE, row.names = FALSE)
+  filename <- paste0(output_dir, CNA_genes[i], "_TCGA_CNA_boxplot.pdf")
+  pdf(file = filename)
+  print(ggplot(subdata, aes(x = idh_codel_subtype, y = counts)) +
+        geom_boxplot(position=position_dodge(width=0.8), aes(fill=as.factor(CNA))) +
+        geom_point(aes(group = CNA), 
+             position = position_dodge(width = 0.75), 
+             size = 2, alpha = 0.7) +
+        theme_classic() +
+        labs(x = CNA_genes[i], y = "Log2 normalized counts") +
+        theme(axis.text = element_text(angle = 45)))
+  dev.off()
+}
+```
+
+## make violin plots from the TCGA for selected miRNAs (Fig 3d, Fig S3b,d,e)
+```{r}
+## load in the normalised counts
+TCGA_miRNA_norm_counts <- read.delim(paste0(miRNA_input, "TCGA_miRNA_norm_counts_GBMs_oligos_included.txt"))
+
+## miRNAs are the rownames
+## filter for the wanted genes
+miRNAs <- c("hsa-let-7b", "hsa-mir-342", "hsa-mir-301b", "hsa-mir-130b",
+            "hsa-mir-15b", "hsa-mir-18a", "hsa-mir-4717")
+## filter for these ncRNAs
+miRNAs_TCGA <- as.data.frame(TCGA_miRNA_norm_counts[which(rownames(TCGA_miRNA_norm_counts) %in% miRNAs), ])
+
+## remove the ensembl column
+miRNAs_TCGA <- miRNAs_TCGA[, -(437)]
+
+## transform to log2
+miRNAs_TCGA <- log2(miRNAs_TCGA + 1)
+
+## read in the grade information
+TCGA_miRNA_classification <- read.delim(paste0(miRNA_input, "TCGA_classification_for_violins_all_tumors_miRNAs.txt"),
+                                        sep = "\t")
+
+## some of the samples have more than 1 portion
+## TCGA.DU.6404.02, TCGA.FG.5965.02, TCGA.DU.6407.02
+## table(merged_CNAs$sample)[table(merged_CNAs$sample) > 5]
+
+## make the violin plots
+plotting_df <- miRNAs_TCGA %>%
+  rownames_to_column(var = "gene") %>%
+  pivot_longer(cols = -gene, names_to = "sample", values_to = "counts")
+
+## before merging the data, reformat the info in TCGA_miRNA_classification
+TCGA_miRNA_classification$sample <- gsub("-", ".", TCGA_miRNA_classification$sample)
+
+merged_data <- plotting_df %>%
+  left_join(TCGA_miRNA_classification, by = "sample")
+
+## drop the recurrent ones
+merged_data <- merged_data[-which(merged_data$primary_recurrent == "recurrent"), ]
+
+## add in the CNA information
+TCGA_CNAs <- read.delim(paste0(lncRNA_input, "TCGA comparison/TCGA_ncRNA_CNAs.txt"))
+rownames(TCGA_CNAs) <- TCGA_CNAs$SAMPLE_ID
+## filter for the respective genes
+miRNA_gene_names <- c("LET.7B.3P", "MIR.342.5P", "MIR.301B.3P", "MIR.130B.3P",
+                      "MIR.15B.5P", "MIR.18A.5P", "MIR.4717.3P")
+miRNA_CNAs <- TCGA_CNAs[, which(colnames(TCGA_CNAs) %in% miRNA_gene_names)]
+colnames(miRNA_CNAs) <- c("hsa-let-7b", "hsa-mir-342", "hsa-mir-130b", "hsa-mir-301b",
+                          "hsa-mir-18a", "hsa-mir-15b", "hsa-mir-4717")
+
+## reformat the gene names for the merging
+## replace the "-" with "."
+rownames(miRNA_CNAs) <- gsub("-", ".", rownames(miRNA_CNAs))
+## filter for the ones with RNA-seq data
+colnames(miRNAs_TCGA) <- substr(colnames(miRNAs_TCGA), 1, nchar(colnames(miRNAs_TCGA)) - 5)
+miRNA_CNAs <- miRNA_CNAs[rownames(miRNA_CNAs) %in% colnames(miRNAs_TCGA), ]
+
+# reformat the CNA data
+miRNA_CNAs_long <- pivot_longer(miRNA_CNAs,
+                                cols = everything(), names_to = "gene", values_to = "CNA")
+miRNA_CNAs_long$sample <- rep(rownames(miRNA_CNAs), each = ncol(miRNA_CNAs))
+
+## remove additional characters from merged_data
+merged_data$sample <- substr(merged_data$sample, 1, nchar(merged_data$sample) - 5)
+
+merged_CNAs <- merged_data %>%
+  left_join(miRNA_CNAs_long, by = c("sample", "gene"))
+
+## drop any NAs in the idh_codel_subtype plot
+## plotting_df <- drop_na(merged_CNAs, IDH_codel_grade)
+
+## make sure there are no duplicates
+merged_CNAs <- unique(merged_CNAs)
+
+## set the colours:
+custom_colors <- c("-1" = "#1f1f79", "0" = "black", "1" = "#e93a3a",
+                   "2" = "#790404", "NA" = "#b1b0af")
+
+for (i in seq_along(miRNAs)){
+  subdata <- merged_CNAs[which(merged_CNAs$gene == miRNAs[i]), ]
+  subdata$counts <- as.numeric(subdata$counts)
+  stat.test.grade <- subdata[subdata$idh_codel_subtype %in% c("IDHmut-codel", "IDHmut-non-codel"),] %>% group_by(idh_codel_subtype) %>% wilcox_test(counts ~ IDH_codel_grade)
+  stat.test <- subdata %>% wilcox_test(counts ~ idh_codel_subtype)
+  ## write them to file as well
+  write.table(stat.test.grade, file = paste0(output_dir, miRNAs[i], "_grade_test.txt"),
+              quote = FALSE, row.names = FALSE)
+  write.table(stat.test, file = paste0(output_dir, miRNAs[i], "_subtype_test.txt"),
+              quote = FALSE, row.names = FALSE)
+  filename <- paste0(output_dir, miRNAs[i], "_TCGA_violin_plot_diffuse_gliomas.pdf")
+  pdf(file = filename)
+  p <-  ggplot(subdata, aes(x = IDH_codel_grade, y = counts)) +
+          geom_violin() +
+          geom_jitter(aes(color = as.factor(CNA)), width = 0.2, alpha = 0.5) +  # Optional jitter for visibility
+          theme_classic() +
+          scale_color_manual(values = custom_colors) +
+          labs(x = miRNAs[i], y = "Log2 normalized counts") +
+          theme(axis.text = element_text(angle = 45))
+  p_sig <- p + stat_pvalue_manual(stat.test, label = "p.adj.signif", y.position = 10, hide.ns = TRUE)
+  p_sig_grade <- p + stat_pvalue_manual(stat.test.grade, label = "p.adj.signif", y.position = 10, hide.ns = TRUE)
+  print(p_sig)
+  print(p_sig_grade)
+  dev.off()
+}
+
+## do the boxplots to check for association between CNA and RNA-seq expression
+## only loop through the genes with CNAs
+miRNA_CNAs <- c("hsa-let-7b", "hsa-mir-342", "hsa-mir-301b",
+                "hsa-mir-130b", "hsa-mir-15b", "hsa-mir-4717")
+
+test <- merged_CNAs[which(merged_CNAs$gene == "hsa-mir-15b"), ]
+
+for (i in seq_along(miRNA_CNAs)){
+  subdata <- merged_CNAs[which(merged_CNAs$gene == miRNA_CNAs[i]), ]
+  subdata$counts <- as.numeric(subdata$counts)
+  stat.test <- subdata %>% group_by(idh_codel_subtype) %>% wilcox_test(counts ~ CNA)
+  ## write them to file as well
+  write.table(stat.test, file = paste0(output_dir, miRNA_CNAs[i], "_CNA_association_test.txt"),
+              quote = FALSE, row.names = FALSE)
+  filename <- paste0(output_dir, miRNA_CNAs[i], "_TCGA_CNA_boxplot.pdf")
+  pdf(file = filename)
+  print(ggplot(subdata, aes(x = idh_codel_subtype, y = counts)) +
+        geom_boxplot(position=position_dodge(width=0.8), aes(fill=as.factor(CNA))) +
+        geom_point(aes(group = CNA), 
+             position = position_dodge(width = 0.75), 
+             size = 2, alpha = 0.7) +
+        theme_classic() +
+        labs(x = miRNA_CNAs[i], y = "Log2 normalized counts") +
+        theme(axis.text = element_text(angle = 45)))
+  dev.off()
+}
+```
+
+## expression barplots for the lncRNAs (Fig 2c, Fig S2b, d)
+Code edited based on code from Serafiina Jaatinen
+Copy number alterations are added manually
+```{r}
+# gene
+genes <- c("NRG3-AS1", "NRG3")
+ylims <- list(NULL)
+
+for (i in seq_along(genes)) {
+  gene <- genes[i]
+  indices <- which(rownames(RNA_counts_filtered) == gene)
+  expr_gene <- RNA_counts_filtered[indices, ]
+  
+  case_a = expr_gene[seq(1,12,2)]
+  case_b = expr_gene[seq(2,12,2)]
+  colnames(case_a) = c("TG02", "TG03", "TG04", "TG05", "TG01", "TG06")
+  colnames(case_b) = c("TG02", "TG03", "TG04", "TG05", "TG01", "TG06")
+  expr_matrix = as.matrix(rbind(case_a, case_b))
+  rownames(expr_matrix) = c("primary", "recurrent")
+  expr_matrix = expr_matrix[, order(colnames(expr_matrix))]
+
+  pdf(paste0(output_dir, gene, "_expression_norm_final.pdf"),
+      width = 7, height = 6)
+  
+  barplot(expr_matrix, beside = TRUE, xlab = gene,
+          ylab = "Normalized counts")
+ 
+  dev.off()
+}
+```
+
+## expression barplots for the miRNAs (Fig 3c, Fig S3c)
+```{r}
+## use the miRNA_counts_filtered object as a base
+genes <- c("hsa-miR-18a-5p", "hsa-miR-4717-3p",
+           "hsa-miR-130b-3p", "hsa-miR-301b-3p", "hsa-let-7b-3p",
+           "hsa-miR-342-5p")
+ylims <- list(NULL)
+
+for (i in seq_along(genes)) {
+  gene <- genes[i]
+  indices <- which(rownames(miRNA_counts_filtered) == genes[i])
+  expr_gene <- miRNA_counts_filtered[indices, ]
+  
+  case_a = expr_gene[seq(1,12,2)]
+  case_b = expr_gene[seq(2,12,2)]
+  colnames(case_a) = c("TG02", "TG03", "TG04", "TG05", "TG01", "TG06")
+  colnames(case_b) = c("TG02", "TG03", "TG04", "TG05", "TG01", "TG06")
+  expr_matrix = as.matrix(rbind(case_a, case_b))
+  rownames(expr_matrix) = c("primary", "recurrent")
+  expr_matrix = expr_matrix[, order(colnames(expr_matrix))]
+
+  pdf(paste0(miRNA_input, gene, "_expression_norm_final.pdf"),
+      width = 7, height = 6)
+  barplot(expr_matrix, beside = TRUE, xlab = gene,
+          ylab = "Normalized counts")
+  dev.off()
+}
+```
+
+## use the pairs.panel function from psych (Fig S1a and b)
+```{r}
+## reorder the count matrix
+RNA_counts_filtered_sorted <- RNA_counts_filtered[, sort(colnames(RNA_counts_filtered))]
+## increasing figure size
+## for mRNAs
+pdf(file = paste0(output_dir, "psych_panels_mRNA.pdf"),
+    width = 30, height = 30)
+pairs.panels(RNA_counts_filtered_sorted)
+dev.off()
+
+## log2
+pdf(file = paste0(output_dir, "psych_panels_mRNA_log2.pdf"),
+    width = 30, height = 30)
+pairs.panels(log2_counts_filtered)
+dev.off()
+
+## for miRNAs
+colnames(miRNA_counts_filtered) <- colnames(RNA_counts_filtered)
+miRNA_counts_filtered_sorted <- miRNA_counts_filtered[, sort(colnames(miRNA_counts_filtered))]
+pdf(file = paste0(output_dir, "psych_panels_miRNA.pdf"),
+    width = 30, height = 30)
+pairs.panels(miRNA_counts_filtered_sorted)
+dev.off()
+
+## log2 scaling
+pdf(file = paste0(output_dir, "psych_panels_miRNA_log2.pdf"),
+    width = 30, height = 30)
+pairs.panels(miRNA_log2_counts_filtered)
+dev.off()
+
+## log2 of unfiltered norm counts
+rownames(RNA_counts) <- RNA_counts[, 1]
+RNA_counts <- RNA_counts[, -(1)]
+colnames(RNA_counts) <- c("TG02a", "TG02b", "TG03a",
+                          "TG03b", "TG04a", "TG04b",
+                          "TG05a", "TG05b", "TG01a",
+                          "TG01b", "TG06a", "TG06b")
+log2_unfiltered_mRNA <- log2(RNA_counts + 1)
+
+## reorder to have TG01a in the beginning
+new_order <- sort(colnames(log2_unfiltered_mRNA))
+log2_unfiltered_mRNA <- log2_unfiltered_mRNA[, new_order]
+
+pdf(file = paste0(output_dir, "psych_panels_mRNA_log2_unfiltered.pdf"),
+    width = 10, height = 10)
+pairs.panels(log2_unfiltered_mRNA)
+dev.off()
+
+## log2 of unfiltered norm miRNA counts
+log2_unfiltered_miRNA <- log2(miRNA_counts + 1)
+
+pdf(file = paste0(output_dir, "psych_panels_miRNA_log2_unfiltered.pdf"),
+    width = 10, height = 10)
+pairs.panels(log2_unfiltered_miRNA)
+dev.off()
+```
+
+## Heatmap for Fig 1f
+```{r}
+df <- as.data.frame(matrix(c(30, 25, 1, 0, 0, 0, 4, 8, 0, 0, 16, 8, 7, 2, 1, 1, 9, 17, 37, 93, 15, 13,
+                             119, 6, 63, 0, 10, 0, 37, 0, 1, 0, 27, 6, 106, 0, 4, 0, 3, 4, 16, 10, 15, 1,
+                             12, 77, 1, 0, 1, 0, 3, 17, 0, 8, 8, 30, 0, 5, 0, 18, 7, 41, 8, 24, 4, 30,
+                             1, 41, 0, 0, 0, 0, 0, 3, 0, 1, 0, 21, 0, 6, 0, 11, 0, 18, 3, 28, 0, 11), nrow = 4, ncol = 22, byrow = TRUE))
+
+
+library(ggplot2)
+library(reshape2)
+library(gridExtra)
+
+# Create two subsets: red (odd columns) and blue (even columns)
+df_red <- df[, seq(1, ncol(df), by = 2)]
+df_blue <- df[, seq(2, ncol(df), by = 2)]
+
+# Add row identifiers
+df_red$row <- 1:nrow(df_red)
+df_blue$row <- 1:nrow(df_blue)
+
+# Melt the data frames for ggplot
+df_red_melt <- melt(df_red, id.vars = "row")
+df_blue_melt <- melt(df_blue, id.vars = "row")
+
+# Plot red heatmap
+
+# Define custom color gradients
+red_colors <- c("#f0e5e5", "#e57373", "#b71c1c") # light grayish red to deep red
+blue_colors <- c("#e5ecf0", "#64b5f6", "#0d47a1") 
+
+# Plot red heatmap
+p_red <- ggplot(df_red_melt, aes(x = variable, y = factor(row), fill = value)) +
+geom_tile() +
+scale_fill_gradientn(colors = red_colors, limits = c(0, 130)) +
+theme_minimal() +
+labs(title = "Red Scale Columns", x = NULL, y = NULL) +
+theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# Plot blue heatmap
+p_blue <- ggplot(df_blue_melt, aes(x = variable, y = factor(row), fill = value)) +
+geom_tile() +
+scale_fill_gradientn(colors = blue_colors, limits = c(0, 130)) +
+theme_minimal() +
+labs(title = "Blue Scale Columns", x = NULL, y = NULL) +
+theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+pdf(width = 7, file = paste0(output_dir, "Fig1f_heatmap.pdf"))
+grid.arrange(p_red, p_blue, ncol = 2)
+dev.off()
+```
