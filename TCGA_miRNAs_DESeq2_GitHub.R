@@ -106,32 +106,34 @@ write.table(resTable, file = paste0(input_dir, "TCGA_miRNA_DESeq2_0.1_FC_1.txt")
             sep = "\t", quote = FALSE)
 
 ## normalise together with oligos for the violin plots
-## colData and filtering
 primary_info <- read.delim(paste0(input_dir, "tumor_classes_recurrent_genes_expr_2209.txt"))
+### only primary tumors
+## colData and filtering
 colData_all <- primary_info[c("sample", "idh_codel_subtype", "grade", "primary_recurrent", "IDH_codel_grade", "idh_codel_primary_recurrent")]
 colData_all[, 1] <- as.character(colData_all[, 1])
 colData_all[, 1] <- substr(colData_all[, 1], 1, nchar(colData_all[, 1]) - 8)
-diffuse_astro_matrix <- lgg_miRNA_matrix_filtered[, (colnames(lgg_miRNA_matrix_filtered) %in% colData_all$sample)]
-colData_all <- colData_all[colData_all$sample %in% colnames(diffuse_astro_matrix), ]
-## sanple numbers
+primary_colData_all <- colData_all[which(colData_all$primary_recurrent == "primary"), ]
+primary_diffuse_astro_matrix <- lgg_miRNA_matrix_filtered[, (colnames(lgg_miRNA_matrix_filtered) %in% primary_colData_all$sample)]
+primary_colData_all <- primary_colData_all[primary_colData_all$sample %in% colnames(primary_diffuse_astro_matrix), ]
+## sample numbers
 ## IDHmut codel: gr2: 81, 70 gr3
-## IDHmut astro: gr2: 107, gr3: 96, gr4: 15
-## IDHwt: 67
+## IDHmut astro: gr2: 107, gr3: 96, gr4: 11
+## IDHwt: 64
 
 ## make sure the colData and the TCGA_GBM_LGG_matrix are in the same order
-setdiff(colData_all$sample, colnames(diffuse_astro_matrix))
-new_order <- colData_all[, 1]
-diffuse_astro_matrix <- diffuse_astro_matrix[, order(match(colnames(diffuse_astro_matrix), new_order))]
+setdiff(primary_colData_all$sample, colnames(primary_diffuse_astro_matrix))
+new_order <- primary_colData_all[, 1]
+primary_diffuse_astro_matrix <- primary_diffuse_astro_matrix[, order(match(colnames(primary_diffuse_astro_matrix), new_order))]
 
 ## export the colData for making the violin plots
-write.table(colData_all, file = paste0(input_dir, "TCGA_classification_for_violins_all_tumors_miRNAs.txt"),
+write.table(colData_all, file = paste0(input_dir, "TCGA_classification_for_violins_all_primary_tumors_miRNAs.txt"),
             sep = "\t", quote = FALSE)
 
 ## the design variable doesn't matter
-dds <- DESeqDataSetFromMatrix(countData = diffuse_astro_matrix,
-                              colData = colData_all, design = ~ IDH_codel_grade)
+dds <- DESeqDataSetFromMatrix(countData = primary_diffuse_astro_matrix,
+                              colData = primary_colData_all, design = ~ IDH_codel_grade)
 dds <- estimateSizeFactors(dds)
 normalized_counts <- as.data.frame(counts(dds, normalized=TRUE))
 
-write.table(normalized_counts, file = paste0(input_dir, "TCGA_miRNA_norm_counts_GBMs_oligos_included.txt"),
+write.table(normalized_counts, file = paste0(input_dir, "TCGA_miRNA_primary_norm_counts_GBMs_oligos_included.txt"),
             sep = "\t", quote = FALSE)
