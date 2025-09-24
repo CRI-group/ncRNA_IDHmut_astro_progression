@@ -139,29 +139,31 @@ write.table(all_genes_with_symbol, file = paste0(input_dir, "TCGA_DESeq2_all_gen
 all_lncRNAs <- rtracklayer::import("C:/Users/gcanha/OneDrive - TUNI.fi/Documents/Secondary GBM/gencode.v30.long_noncoding_RNAs.gtf")
 all_lncRNAs_df <- as.data.frame(all_lncRNAs)
 
+### Only primary tumors
 ## normalise the data together with oligos, etc. for the lncRNA violin plots
 colData_all = primary_info[c("sample", "idh_codel_subtype", "grade", "primary_recurrent", "IDH_codel_grade", "idh_codel_primary_recurrent")]
 ## make sure the TCGA_GBM_LGG_matrix is filtered
-diffuse_astro_matrix <- TCGA_GBM_LGG_matrix[, (colnames(TCGA_GBM_LGG_matrix) %in% colData_all$sample)]
+primary_colData_all <- colData_all[which(colData_all$primary_recurrent == "primary"), ]
+primary_diffuse_astro_matrix <- TCGA_GBM_LGG_matrix[, (colnames(TCGA_GBM_LGG_matrix) %in% primary_colData_all$sample)]
 
 ## make sure the colData and the TCGA_GBM_LGG_matrix are in the same order
-setdiff(colData_all$sample, colnames(diffuse_astro_matrix))
+setdiff(primary_colData_all$sample, colnames(primary_diffuse_astro_matrix))
 ## remove the "TCGA-DU-6392-01A-11R-1708-07", that is not in the diffuse_astro_matrix
-colData_all <- colData_all[-(which(colData_all$sample == "TCGA-DU-6392-01A-11R-1708-07")), ]
-new_order <- colData_all[, 1]
-diffuse_astro_matrix <- diffuse_astro_matrix[, order(match(colnames(diffuse_astro_matrix), new_order))]
+primary_colData_all <- primary_colData_all[-(which(primary_colData_all$sample == "TCGA-DU-6392-01A-11R-1708-07")), ]
+new_order <- primary_colData_all[, 1]
+primary_diffuse_astro_matrix <- primary_diffuse_astro_matrix[, order(match(colnames(primary_diffuse_astro_matrix), new_order))]
 ## numbers:
 ## IDHmutcodel G2: 81, G3: 70
-## IDHmut noncodel G2: 110, G3: 97, G4: 24
-## IDHwt: 212
+## IDHmut noncodel G2: 110, G3: 97, G4: 19
+## IDHwt: 200
 
 ## export the colData for making the violin plots
-write.table(colData_all, file = paste0(input_dir, "TCGA_classification_for_violins_all_tumors.txt"),
+write.table(primary_colData_all, file = paste0(input_dir, "TCGA_classification_for_violins_all_primary_tumors.txt"),
             sep = "\t", quote = FALSE)
 
 ## the design variable doesn't matter
-dds <- DESeqDataSetFromMatrix(countData = diffuse_astro_matrix,
-                              colData = colData_all, design = ~ IDH_codel_grade)
+dds <- DESeqDataSetFromMatrix(countData = primary_diffuse_astro_matrix,
+                              colData = primary_colData_all, design = ~ IDH_codel_grade)
 dds <- estimateSizeFactors(dds)
 normalized_counts <- as.data.frame(counts(dds, normalized=TRUE))
 normalized_counts$ensembl <- gsub("\\..*", "", rownames(normalized_counts))
@@ -175,7 +177,7 @@ annots = unique(annots)
 
 colnames(annots_save)[1] <- "ensembl"
 norm_counts_with_symbol <- merge(normalized_counts, annots_save,
-                               by.x = "ensembl")
+                                 by.x = "ensembl")
 
-write.table(norm_counts_with_symbol, file = paste0(input_dir, "TCGA_norm_counts_GBMs_oligos_included.txt"),
+write.table(norm_counts_with_symbol, file = paste0(input_dir, "TCGA_primary_norm_counts_GBMs_oligos_included.txt"),
             sep = "\t", quote = FALSE)
