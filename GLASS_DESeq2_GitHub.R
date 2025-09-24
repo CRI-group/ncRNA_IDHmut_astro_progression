@@ -98,20 +98,19 @@ write.table(all_genes_with_symbol, file = paste0(input_dir, "GLASS_RNA_DESeq2_al
             sep = "\t", quote = FALSE)
 
 ## check how many lncRNAs are measured
-DE_lncRNAs_all <- c("CRNDE", "MIR4435-2HG", "LINC01088", "CYTOR", "FBXL19-AS1",
-                    "NEAT1", "PVT1", "WDFY3-AS2", "HAGLR", "NRG3-AS1", "COLCA1",
-                    "RMST", "DUXAP8", "LINC00842", "LINC00844", "DISC1-IT1",
-                    "ARHGEF26-AS1", "RNF219-AS1", "FAM167A-AS1", "PCDH9-AS3",
-                    "LINC01224", "FAM225A", "DNMBP-AS1", "LINC00624", "FAM225B",
-                    "LINC01094", "LINC00648", "LNX1-AS1", "LINC01736",
-                    "FAM155A-IT1", "LINC00836", "GTSCR1", "FAM95B1",
-                    "LINC01241", "WDR11-AS1", "SOX5-AS1", "KCNIP4-IT1",
-                    "SMC2-AS1", "EDNRB-AS1", "PWAR1")
+## check how many lncRNAs are measured
+DE_lncRNAs_all <- c("LINC00836", "ARHGEF26-AS1", "LINC00844", "GTSCR1",
+                    "LINC00842", "CRNDE", "NRG3-AS1", "FAM95B1", "RMST",
+                    "MIR4435-2HG", "LNX1-AS1", "LINC01241", "LINC01736",
+                    "LINC01088", "LINC00648", "CYTOR", "WDR11-AS1", "SOX5-AS1",
+                    "FBXL19-AS1", "COLCA1", "LINC01094", "KCNIP4-IT1",
+                    "SMC2-AS1", "EDNRB-AS1", "NEAT1", "LINC00624", "FAM225B",
+                    "HAGLR", "PVT1", "LINC01224", "FAM225A", "DNMBP-AS1",
+                    "DISC1-IT1")
 
 which(DE_lncRNAs_all %in% all_genes_with_symbol$SYMBOL)
-## measured: COLCA1 and FAM167A-AS1
+## measured: COLCA1
 which(all_genes_with_symbol$SYMBOL == "COLCA1") # significant
-which(all_genes_with_symbol$SYMBOL == "FAM167A-AS1") # significant
 
 ## export the gene symbols with the LFC for the Venn Diagrams
 ## merge the annots with the resTable
@@ -120,4 +119,5 @@ sig_genes_with_symbol <- merge(resTable_sig, annots_save,
                                by.x = "ensembl")
 
 write.table(sig_genes_with_symbol, file = paste0(input_dir, "GLASS_RNA_DESeq2_sig_genes_symbols.txt"),
+
             sep = "\t", quote = FALSE)
