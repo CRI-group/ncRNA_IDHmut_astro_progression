@@ -5,7 +5,6 @@ date: "8 4 2022"
 output: html_document
 ---
 
-
 ```{r}
 knitr::opts_chunk$set(echo = TRUE)
 ```
@@ -597,18 +596,12 @@ if (websiteLive) {
 }
 
 ## write to file
-write.xlsx(TCGA_unique_enriched[["GO_Biological_Process_2023"]],
-           paste0(output_dir, "TCGA_unique_module_genes_BP_process_DE.xlsx"))
 write.xlsx(TCGA_unique_enriched[["Reactome_2022"]],
            paste0(output_dir, "TCGA_unique_module_genes_pathways_DE.xlsx"))
 
-write.xlsx(TCGA_up_enriched[["GO_Biological_Process_2023"]],
-           paste0(output_dir, "TCGA_unique_up_module_genes_GO_BP_process_DE.xlsx"))
 write.xlsx(TCGA_up_enriched[["Reactome_2022"]],
            paste0(output_dir, "TCGA_unique_up_module_genes_pathways_DE.xlsx"))
 
-write.xlsx(TCGA_down_enriched[["GO_Biological_Process_2023"]],
-           paste0(output_dir, "TCGA_unique_down_module_genes_GO_BP_process_DE.xlsx"))
 write.xlsx(TCGA_down_enriched[["Reactome_2022"]],
            paste0(output_dir, "TCGA_unique_down_module_genes_pathways_DE.xlsx"))
 
@@ -861,21 +854,14 @@ if (websiteLive) {
 }
 
 ## write to file
-write.xlsx(TCGA_Early_enriched[["GO_Biological_Process_2023"]],
-           paste0(output_dir, "TCGA_unique_Early_BP_process_DE.xlsx"))
 write.xlsx(TCGA_Early_enriched[["Reactome_2022"]],
            paste0(output_dir, "TCGA_unique_Early_pathways_DE.xlsx"))
 
-write.xlsx(TCGA_Early_Middle_enriched[["GO_Biological_Process_2023"]],
-           paste0(output_dir, "TCGA_unique_Early_Middle_GO_BP_process_DE.xlsx"))
 write.xlsx(TCGA_Early_Middle_enriched[["Reactome_2022"]],
            paste0(output_dir, "TCGA_unique_up_Early_Middle_pathways_DE.xlsx"))
 
-write.xlsx(TCGA_Middle_Late_enriched[["GO_Biological_Process_2023"]],
-           paste0(output_dir, "TCGA_unique_Middle_Late_GO_BP_process_DE.xlsx"))
 write.xlsx(TCGA_Middle_Late_enriched[["Reactome_2022"]],
            paste0(output_dir, "TCGA_unique_Middle_Late_pathways_DE.xlsx"))
-
 ```
 
 ## repeat for GLASS_unique
@@ -888,7 +874,7 @@ GLASS_unique_down <- read.delim(paste0(lncRNA_input, "GLASS_uniquely_down_protei
 
 GLASS_unique_up_module_genes <- TableS2_Sloan[TableS2_Sloan[, 1] %in% GLASS_unique_up[, 1], ]
 table(GLASS_unique_up_module_genes[, 2])
-# Early Early_Middle   Middle  Middle_Late 
+# Early Early_Middle   Middle  Middle_Late
 # 15     15            8        4
 
 GLASS_unique_down_module_genes <- TableS2_Sloan[TableS2_Sloan[, 1] %in% GLASS_unique_down[, 1], ]
@@ -897,7 +883,7 @@ table(GLASS_unique_down_module_genes[, 2])
 # 13   1            11   4        30
 ```
 
-## Volcano plots
+## Volcano plots (Fig 1b)
 709 genes are considered significant, construct volcano plot for them
 ```{r}
 ## considering all genes
@@ -905,15 +891,6 @@ table(GLASS_unique_down_module_genes[, 2])
 RNA_results$DE <- "not DE"
 RNA_results$DE[RNA_results$log2FoldChange > 1 & RNA_results$padj < 0.05] <- "up"
 RNA_results$DE[RNA_results$log2FoldChange < -1 & RNA_results$padj < 0.05] <- "down"
-
-## manually change the status for the lncRNAs with padj. 0.1
-lncRNAs_changed_p_val_up <- c("DUXAP8")
-lncRNAs_changed_p_val_down <- c("PWAR1", "FAM155A-IT1", "PCDH9-AS3",
-                                "FAM167A-AS1", "RNF219-AS1", "WDFY3-AS2")
-changed_lncRNA_indices_up <- which(RNA_results[, 1] %in% lncRNAs_changed_p_val_up)
-changed_lncRNA_indices_down <- which(RNA_results[, 1] %in% lncRNAs_changed_p_val_down)
-RNA_results[changed_lncRNA_indices_up, 8] <- "up"
-RNA_results[changed_lncRNA_indices_down, 8] <- "down"
 
 volcano_colors <- gene_pal
 names(volcano_colors) <- c("down", "not DE", "up")
@@ -937,10 +914,10 @@ miRNA_results <- read.delim(paste0(miRNA_input, "miRNAs_DESeq2_only_R.csv"),
 miRNA_results <- miRNA_results[-(which(miRNA_results$padj == "#N/A")), ]
 ## make sure the column is numeric
 miRNA_results$padj <- as.numeric(miRNA_results$padj)
-## add the "DE" column separately as different cutoffs were set
+## add the "DE" column separately
 miRNA_results$DE <- "not DE"
-miRNA_results$DE[miRNA_results$log2FoldChange > 1 & miRNA_results$padj < 0.1] <- "up"
-miRNA_results$DE[miRNA_results$log2FoldChange < -1 & miRNA_results$padj < 0.1] <- "down"
+miRNA_results$DE[miRNA_results$log2FoldChange > 1 & miRNA_results$padj < 0.05] <- "up"
+miRNA_results$DE[miRNA_results$log2FoldChange < -1 & miRNA_results$padj < 0.05] <- "down"
 colnames(miRNA_results)[1] <- "genes"
 
 ## label the top 10 DE miRNAs
@@ -1281,7 +1258,7 @@ plot_PCA(t(combined_rlog[select, ]), label = rownames_for_PCA,
          size_title = "Ki67 RNA-seq expression")
 ```
 
-## Heatmaps for the significant genes
+## Heatmaps for the significant genes (Fig 3a)
 ```{r}
 ## make the color palette for the heatmap with the nature colors
 heatmap_pal <- colorRamp2(c(-4, 0, 4), c("#3C5488B2", "#d5d3d3", "#E64B35B2"))
@@ -1416,9 +1393,9 @@ dev.off()
 # adjusting the row_names with row_names_gp = grid::gpar(fontsize = 8)
 ```
 
-## read in the lncRNAs to make a heatmap for them (Fig 3a)
+## read in the lncRNAs to make a heatmap for them (Fig 2a)
 ```{r}
-sig_lncRNAs <- read.delim(paste0(lncRNA_input, "norm_counts_all_significant_lncRNAs_q_01.txt"),
+sig_lncRNAs <- read.delim(paste0(lncRNA_input, "norm_counts_all_significant_lncRNAs.txt"),
                           sep = "\t")
 
 colnames(sig_lncRNAs) <- c("TG02a", "TG02b", "TG03a", "TG03b",
@@ -1499,7 +1476,7 @@ p_adj_LFC_anno_lncRNA_4 <- rowAnnotation(
   show_legend = rep(FALSE, 5)
 )
 
-pdf(file = paste0(output_dir, "Heatmap_sig_lncRNAs_log2_scaled_pearson.pdf"),
+pdf(file = paste0(output_dir, "Heatmap_sig_lncRNAs_log2_scaled_pearson_new.pdf"),
     width = 7, height = 7)
 ## without legend
 Heatmap(sig_lncRNAs_log2_scaled, top_annotation = ha_2,
@@ -2490,7 +2467,11 @@ sum(G2M_genes %in% all_shared[, 1])
 ```{r}
 DE_lncRNA_targets <- read.table(paste0(lncRNA_input, "all_correlating_DE_target_genes_lncRNAs_stats.txt"),
                                 header = TRUE, sep = " ")
-
+## try to remove the ones with adj. p-value > 0.05
+## only WDFY3-AS2 has correlating targets
+DE_lncRNA_targets <- DE_lncRNA_targets[-which(DE_lncRNA_targets$lncRNA == "WDFY3-AS2"), ]
+length(unique(DE_lncRNA_targets$target))
+table(table(DE_lncRNA_targets$target))
 ## miRNAs
 miRNA_DE_targets_no_FC <- read.delim(paste0(miRNA_input, "all_correlating_DE_target_genes_miRNAs_no_FC.txt"),
                                header = TRUE, sep = " ")
@@ -2514,6 +2495,10 @@ lncRNA_targets_measured_in_all <- intersect(TG_sig_genes_pc_measured_in_all[, 1]
 
 lncRNA_targets_Reactome <- lncRNA_enriched[["Reactome_2022"]]
 sig_lncRNA_targets_Reactome <- lncRNA_targets_Reactome[which(lncRNA_targets_Reactome$Adjusted.P.value < 0.05), ]
+write.table(sig_lncRNA_targets_Reactome, paste0(lncRNA_input, "lncRNA_pathways_new.txt"),
+            sep = "\t", row.names = FALSE, quote = FALSE)
+test <- read.delim(paste0(lncRNA_input, "lncRNA_pathways_new.txt"))
+test_2 <- unlist(strsplit(test$Genes, split = ";"))
 
 DE_genes <- RNA_sig_genes[, c(1, 3)]
 pattern <- "R-HSA-[0-9]+"
@@ -2665,7 +2650,7 @@ rownames(heatmap_df_filtered) <- new_names
 ## plotting the heatmap
 heatmap_col <- c("#FFFFFF", "#d5d3d3")
 names(heatmap_col) <- c("no", "yes")
-pdf(file = paste0(output_dir, "lncRNA_target_enrichment_Reactome_filtered.pdf"),
+pdf(file = paste0(output_dir, "lncRNA_target_enrichment_Reactome_filtered_new.pdf"),
     height = 5, width = 15)
 print(Heatmap(heatmap_df_filtered, top_annotation = top_anno,
         bottom_annotation = bottom_anno_3,
@@ -2681,6 +2666,9 @@ dev.off()
 
 miRNA_targets_Reactome <- miRNA_enriched[["Reactome_2022"]]
 sig_miRNA_targets_Reactome <- miRNA_targets_Reactome[which(miRNA_targets_Reactome$Adjusted.P.value < 0.05), ]
+write.table(sig_miRNA_targets_Reactome, paste0(lncRNA_input, "miRNA_pathways_new.txt"),
+            sep = "\t", row.names = FALSE, quote = FALSE)
+
 
 pattern <- "R-HSA-[0-9]+"
 HSA_identifiers <- str_extract(sig_miRNA_targets_Reactome[, 1], pattern)
@@ -2735,17 +2723,11 @@ target_of_let7 <- colnames(heatmap_df_filtered) %in% let7_targets[, 2]
 mir15b_targets <- miRNA_DE_targets_no_FC[which(miRNA_DE_targets_no_FC[, 1] == "hsa-miR-15b-5p"), ]
 target_of_15b <- colnames(heatmap_df_filtered) %in% mir15b_targets[, 2]
 
-# based on the score, the third one should be hsa-miR-301b-3p
-mir301b_targets <- miRNA_DE_targets_no_FC[which(miRNA_DE_targets_no_FC[, 1] == "hsa-miR-301b-3p"), ]
-target_of_301b <- colnames(heatmap_df_filtered) %in% mir301b_targets[, 2]
-
 ## create a top annotation with the most important miRNAs
 top_anno <- HeatmapAnnotation(let7_target = target_of_let7,
                               mir15b_target = target_of_15b,
-                              mir301b_target = target_of_301b,
                               col = list(let7_target = target_col,
-                                         mir15b_target = target_col,
-                                         mir301b_target = target_col),
+                                         mir15b_target = target_col),
   # Additional settings
   show_legend = FALSE,
   show_annotation_name = TRUE,
@@ -2825,7 +2807,7 @@ rownames(heatmap_df_filtered) <- new_names
 ## plotting the heatmap
 heatmap_col <- c("#FFFFFF", "#d5d3d3")
 names(heatmap_col) <- c("no", "yes")
-pdf(file = paste0(output_dir, "miRNA_target_enrichment_Reactome_filtered.pdf"),
+pdf(file = paste0(output_dir, "miRNA_target_enrichment_Reactome_filtered_new.pdf"),
     height = 5, width = 15)
 print(Heatmap(heatmap_df_filtered, top_annotation = top_anno,
         bottom_annotation = bottom_anno_3,
@@ -2875,7 +2857,6 @@ table(TCGA_2021_CNAs_diagnoses$IDH_codel_grade)
 # astro gr2: 107, gr3: 97, gr4: 27
 # GB gr4: 330
 
-
 ## for all CNAs loop through and get the distributions of samples to subgroups
 subgroup_distributions_result <- list()
 for (gene in colnames(TCGA_CNAs_2021)){
@@ -2914,18 +2895,17 @@ final_results_df <- do.call(rbind, subgroup_distributions_result)
 GLASS_CNAs <- read.delim(paste0(GLASS_input, "/variants_gene_copy_number.csv/variants_gene_copy_number.csv"),
                          sep = ",")
 ## filter for the DE lncRNAs
-DE_lncRNAs_all <- c("CRNDE", "MIR4435-2HG", "LINC01088", "CYTOR", "FBXL19-AS1",
-                    "NEAT1", "PVT1", "WDFY3-AS2", "HAGLR", "NRG3-AS1", "COLCA1",
-                    "RMST", "DUXAP8", "LINC00842", "LINC00844", "DISC1-IT1",
-                    "ARHGEF26-AS1", "RNF219-AS1", "FAM167A-AS1", "PCDH9-AS3",
-                    "LINC01224", "FAM225A", "DNMBP-AS1", "LINC00624", "FAM225B",
-                    "LINC01094", "LINC00648", "LNX1-AS1", "LINC01736",
-                    "FAM155A-IT1", "LINC00836", "GTSCR1", "FAM95B1",
-                    "LINC01241", "WDR11-AS1", "SOX5-AS1", "KCNIP4-IT1",
-                    "SMC2-AS1", "EDNRB-AS1", "PWAR1")
+DE_lncRNAs_all <- c("LINC00836", "ARHGEF26-AS1", "LINC00844", "GTSCR1",
+                    "LINC00842", "CRNDE", "NRG3-AS1", "FAM95B1", "RMST",
+                    "MIR4435-2HG", "LNX1-AS1", "LINC01241", "LINC01736",
+                    "LINC01088", "LINC00648", "CYTOR", "WDR11-AS1", "SOX5-AS1",
+                    "FBXL19-AS1", "COLCA1", "LINC01094", "KCNIP4-IT1",
+                    "SMC2-AS1", "EDNRB-AS1", "NEAT1", "LINC00624", "FAM225B",
+                    "HAGLR", "PVT1", "LINC01224", "FAM225A", "DNMBP-AS1",
+                    "DISC1-IT1")
 GLASS_CNAs <- GLASS_CNAs[which(GLASS_CNAs$gene_symbol %in% DE_lncRNAs_all), ]
 ## write to file, as the basis file is super large
-## write.xlsx(GLASS_CNAs, file = paste0(GLASS_input, "GLASS_CNAs_lncRNAs.xlsx"))
+write.xlsx(GLASS_CNAs, file = paste0(GLASS_input, "GLASS_CNAs_lncRNAs.xlsx"))
 GLASS_CNAs <- read.xlsx(paste0(GLASS_input, "GLASS_CNAs_lncRNAs.xlsx"))
 ## GLSS-MD-0027-R1 and GLSS-MD-0027-TP seem to have two sequencing rounds
 ## remove the WXS sample
@@ -3001,13 +2981,10 @@ for (gene in rownames(distributions_df)){
 GLASS_CNAs <- read.delim(paste0(GLASS_input, "/variants_gene_copy_number.csv/variants_gene_copy_number.csv"),
                          sep = ",")
 
-miRNA_gene_names <- c("MIRLET7B", "MIR342", "MIR383", "MIR708", "MIR210",
-                      "MIR196B", "MIR130B", "MIR301B", "MIR18A", "MIR15B",
-                      "MIR187", "MIR199A", "MIR199B", "MIR6500", "MIR4421",
-                      "MIR4717", "MIR3121", "MIR4741", "MIR4746", "MIR548BA",
-                      "MIR548AB", "MIR7702", "MIR216A", "MIR489", "MIR505",
-                      "MIR92B", "MIR199B", "MIR1298", "MIR1286", "MIR4662A",
-                      "MIR10527")
+miRNA_gene_names <- c("MIRLET7B", "MIR383", "MIR708", "MIR210", "MIR301B",
+                      "MIR15B", "MIR187", "MIR199A", "MIR199B", "MIR4421",
+                      "MIR4717", "MIR4741", "MIR4746", "MIR548AB", "MIR7702",
+                      "MIR505", "MIR199B", "MIR1298", "MIR4662A")
 
 ## filter for the miRNA genes
 GLASS_CNAs <- GLASS_CNAs[which(GLASS_CNAs$gene_symbol %in% miRNA_gene_names), ]
@@ -3020,7 +2997,7 @@ GLASS_CNAs$aliquot_barcode <- substr(GLASS_CNAs$aliquot_barcode, 1, nchar(GLASS_
 GLASS_CNAs <- GLASS_CNAs[GLASS_CNAs$aliquot_barcode %in% GLASS_info$sample_barcode, ]
 
 ## put to xlsx
-write.table(GLASS_CNAs, file = paste0(GLASS_input, "GLASS_CNAs_miRNAs.xlsx"))
+write.xlsx(GLASS_CNAs, file = paste0(GLASS_input, "GLASS_CNAs_miRNAs.xlsx"))
 
 ## separate the two additional gr3 samples that are there
 ## GLSS-HF-4F0A-R1 (gr3)
@@ -3080,12 +3057,12 @@ final_results_df <- do.call(rbind, subgroup_distributions_result)
 ## make violin plots from the TCGA for selected lncRNAs (Fig 2d, Fig S2e)
 ```{r}
 ## read in the object normalised with all subtypes
-norm_counts_diffuse_astros <- read.delim(paste0(miRNA_input, "TCGA_norm_counts_GBMs_oligos_included.txt"))
+norm_counts_diffuse_astros <- read.delim(paste0(miRNA_input, "TCGA_primary_norm_counts_GBMs_oligos_included.txt"))
 ## exclude the ones without gene symbols
 norm_counts_with_symbol <- norm_counts_diffuse_astros[- which(is.na(norm_counts_diffuse_astros$SYMBOL) == TRUE), ]
 
 ## filter for the wanted genes
-genes <- c("CYTOR", "NEAT1", "PVT1", "NRG3-AS1", "NRG3")
+genes <- c("CYTOR", "NEAT1", "PVT1")
 lncRNAs_TCGA <- norm_counts_with_symbol[which(norm_counts_with_symbol$SYMBOL %in% genes), ]
 rownames(lncRNAs_TCGA) <- lncRNAs_TCGA$SYMBOL
 
@@ -3102,10 +3079,10 @@ lncRNA_CNAs <- lncRNA_CNAs[rownames(lncRNA_CNAs) %in% colnames(lncRNAs_TCGA), ]
 
 ## transform to log2
 ## remove the ENSG and SYMBOL columns for the log2 transformation
-lncRNAs_TCGA <- lncRNAs_TCGA[, -c(1, 596)]
+lncRNAs_TCGA <- lncRNAs_TCGA[, -c(1, 579)]
 lncRNAs_TCGA <- log2(lncRNAs_TCGA + 1)
 ## also need the files whether they are grade 2 or grade 3
-TCGA_classification <- read.delim(paste0(miRNA_input, "TCGA_classification_for_violins_all_tumors.txt"),
+TCGA_classification <- read.delim(paste0(miRNA_input, "TCGA_classification_for_violins_all_primary_tumors.txt"),
                                   sep = "\t")
 
 ## make the violin plots
@@ -3119,9 +3096,6 @@ TCGA_classification$sample <- gsub("-", ".", TCGA_classification$sample)
 
 merged_data <- plotting_df %>%
   left_join(TCGA_classification, by = "sample")
-
-## filter out all recurrent ones
-merged_data <- merged_data[-which(merged_data$primary_recurrent == "recurrent"), ]
 
 # reformat the CNA data
 lncRNA_CNAs_long <- pivot_longer(lncRNA_CNAs,
@@ -3184,9 +3158,9 @@ for (i in seq_along(CNA_genes)){
   filename <- paste0(output_dir, CNA_genes[i], "_TCGA_CNA_boxplot.pdf")
   pdf(file = filename)
   print(ggplot(subdata, aes(x = idh_codel_subtype, y = counts)) +
-        geom_boxplot(position=position_dodge(width=0.8), aes(fill=as.factor(CNA))) +
+        geom_boxplot(position = position_dodge(width=0.8), aes(fill = as.factor(CNA))) +
         geom_point(aes(group = CNA), 
-             position = position_dodge(width = 0.75), 
+             position = position_dodge(width = 0.75),
              size = 2, alpha = 0.7) +
         theme_classic() +
         labs(x = CNA_genes[i], y = "Log2 normalized counts") +
@@ -3198,23 +3172,19 @@ for (i in seq_along(CNA_genes)){
 ## make violin plots from the TCGA for selected miRNAs (Fig 3d, Fig S3b,d,e)
 ```{r}
 ## load in the normalised counts
-TCGA_miRNA_norm_counts <- read.delim(paste0(miRNA_input, "TCGA_miRNA_norm_counts_GBMs_oligos_included.txt"))
+TCGA_miRNA_norm_counts <- read.delim(paste0(miRNA_input, "TCGA_miRNA_primary_norm_counts_GBMs_oligos_included.txt"))
 
 ## miRNAs are the rownames
 ## filter for the wanted genes
-miRNAs <- c("hsa-let-7b", "hsa-mir-342", "hsa-mir-301b", "hsa-mir-130b",
-            "hsa-mir-15b", "hsa-mir-18a", "hsa-mir-4717")
+miRNAs <- c("hsa-let-7b", "hsa-mir-15b")
 ## filter for these ncRNAs
 miRNAs_TCGA <- as.data.frame(TCGA_miRNA_norm_counts[which(rownames(TCGA_miRNA_norm_counts) %in% miRNAs), ])
-
-## remove the ensembl column
-miRNAs_TCGA <- miRNAs_TCGA[, -(437)]
 
 ## transform to log2
 miRNAs_TCGA <- log2(miRNAs_TCGA + 1)
 
 ## read in the grade information
-TCGA_miRNA_classification <- read.delim(paste0(miRNA_input, "TCGA_classification_for_violins_all_tumors_miRNAs.txt"),
+TCGA_miRNA_classification <- read.delim(paste0(miRNA_input, "TCGA_classification_for_violins_all_primary_tumors_miRNAs.txt"),
                                         sep = "\t")
 
 ## some of the samples have more than 1 portion
@@ -3232,18 +3202,13 @@ TCGA_miRNA_classification$sample <- gsub("-", ".", TCGA_miRNA_classification$sam
 merged_data <- plotting_df %>%
   left_join(TCGA_miRNA_classification, by = "sample")
 
-## drop the recurrent ones
-merged_data <- merged_data[-which(merged_data$primary_recurrent == "recurrent"), ]
-
 ## add in the CNA information
 TCGA_CNAs <- read.delim(paste0(lncRNA_input, "TCGA comparison/TCGA_ncRNA_CNAs.txt"))
 rownames(TCGA_CNAs) <- TCGA_CNAs$SAMPLE_ID
 ## filter for the respective genes
-miRNA_gene_names <- c("LET.7B.3P", "MIR.342.5P", "MIR.301B.3P", "MIR.130B.3P",
-                      "MIR.15B.5P", "MIR.18A.5P", "MIR.4717.3P")
+miRNA_gene_names <- c("LET.7B.3P", "MIR.15B.5P")
 miRNA_CNAs <- TCGA_CNAs[, which(colnames(TCGA_CNAs) %in% miRNA_gene_names)]
-colnames(miRNA_CNAs) <- c("hsa-let-7b", "hsa-mir-342", "hsa-mir-130b", "hsa-mir-301b",
-                          "hsa-mir-18a", "hsa-mir-15b", "hsa-mir-4717")
+colnames(miRNA_CNAs) <- c("hsa-let-7b", "hsa-mir-15b")
 
 ## reformat the gene names for the merging
 ## replace the "-" with "."
@@ -3262,9 +3227,6 @@ merged_data$sample <- substr(merged_data$sample, 1, nchar(merged_data$sample) - 
 
 merged_CNAs <- merged_data %>%
   left_join(miRNA_CNAs_long, by = c("sample", "gene"))
-
-## drop any NAs in the idh_codel_subtype plot
-## plotting_df <- drop_na(merged_CNAs, IDH_codel_grade)
 
 ## make sure there are no duplicates
 merged_CNAs <- unique(merged_CNAs)
@@ -3302,9 +3264,7 @@ for (i in seq_along(miRNAs)){
 ## do the boxplots to check for association between CNA and RNA-seq expression
 ## only loop through the genes with CNAs
 miRNA_CNAs <- c("hsa-let-7b", "hsa-mir-342", "hsa-mir-301b",
-                "hsa-mir-130b", "hsa-mir-15b", "hsa-mir-4717")
-
-test <- merged_CNAs[which(merged_CNAs$gene == "hsa-mir-15b"), ]
+                "hsa-mir-130b", "hsa-mir-15b")
 
 for (i in seq_along(miRNA_CNAs)){
   subdata <- merged_CNAs[which(merged_CNAs$gene == miRNA_CNAs[i]), ]
@@ -3327,12 +3287,12 @@ for (i in seq_along(miRNA_CNAs)){
 }
 ```
 
-## expression barplots for the lncRNAs (Fig 2c, Fig S2b, d)
+## expression barplots for the lncRNAs (Fig 2c)
 Code edited based on code from Serafiina Jaatinen
 Copy number alterations are added manually
 ```{r}
 # gene
-genes <- c("NRG3-AS1", "NRG3")
+genes <- c("CYTOR", "NEAT1", "PVT1")
 ylims <- list(NULL)
 
 for (i in seq_along(genes)) {
@@ -3361,9 +3321,7 @@ for (i in seq_along(genes)) {
 ## expression barplots for the miRNAs (Fig 3c, Fig S3c)
 ```{r}
 ## use the miRNA_counts_filtered object as a base
-genes <- c("hsa-miR-18a-5p", "hsa-miR-4717-3p",
-           "hsa-miR-130b-3p", "hsa-miR-301b-3p", "hsa-let-7b-3p",
-           "hsa-miR-342-5p")
+genes <- c("hsa-let-7b-3p", "hsa-miR-15b-5p")
 ylims <- list(NULL)
 
 for (i in seq_along(genes)) {
@@ -3472,7 +3430,7 @@ df_blue_melt <- melt(df_blue, id.vars = "row")
 # Plot red heatmap
 
 # Define custom color gradients
-red_colors <- c("#f0e5e5", "#e57373", "#b71c1c") # light grayish red to deep red
+red_colors <- c("#f0e5e5", "#e57373", "#b71c1c")
 blue_colors <- c("#e5ecf0", "#64b5f6", "#0d47a1") 
 
 # Plot red heatmap
