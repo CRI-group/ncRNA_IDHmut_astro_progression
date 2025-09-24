@@ -27,15 +27,19 @@ RNA_counts_case_wise <- read.delim("C:/Users/gcanha/OneDrive - TUNI.fi/Documents
 ```
 
 ## Loading DESeq2 result for miRNA and filtered target predictions in 
-
 ```{r}
 # target predictions
 target_predictions <- read.delim(paste0(input_dir, "filtered_predictions_R.csv"),
                                  sep = ";")
 
-## remove the hsa-miR-30a-5p
-target_predictions <- target_predictions[-which(target_predictions[, 1] == "hsa-miR-30a-5p"), ]
-# in total 19201 targets predicted, 9521 unique ones
+## significant miRNAs
+sig_miRNAs <- read.delim(paste0(input_dir, "significant_miRNAs_R.csv"),
+                         sep = ";")
+sig_miRNAs_new <- sig_miRNAs[which(sig_miRNAs$padj < 0.05), ]
+
+## remove some of the miRNAs due to adj. p-val
+target_predictions <- target_predictions[which(target_predictions[, 1] %in% sig_miRNAs_new[, 1]), ]
+# in total 11669 targets predicted, 7317 unique ones
 
 ## get the list of targets for which we do not have expression data
 no_expression_data <- setdiff(target_predictions[, 2], RNA_results[, 1])
@@ -44,10 +48,6 @@ targets_expr_filtered <- target_predictions[(target_predictions[, 2] %in% RNA_re
 for (i in 1:length(targets_expr_filtered[, 2])){
   targets_expr_filtered[i, 3:7] <- RNA_results[which(targets_expr_filtered[i, 2] == RNA_results[, 1]), 2:6]
 }
-
-## significant miRNAs
-sig_miRNAs <- read.delim(paste0(input_dir, "significant_miRNAs_R.csv"),
-                         sep = ";")
 
 miRNA_stats <- targets_expr_filtered
 for (i in 1:length(miRNA_stats[, 1])){
@@ -75,10 +75,7 @@ colnames(target_predictions_stats) <- c("miRNA", "LFC miRNA",
 ```
 
 
-## Correlation analysis for target expression
-correlation analysis can be done both with normalized or raw counts
-there seems to be a small difference between the obtained values with raw or normalized counts
-the normalized counts were used in the end
+## Correlation analysis for target expression (normalized counts)
 ```{r}
 ## load in the normalized counts for the mRNA and miRNA
 normalized_miRNA_counts <- read.delim(paste0(input_dir, "miRNA_normalized_R.csv"),
@@ -88,7 +85,7 @@ normalized_mRNA_counts <- read.delim(paste0(input_dir, "mRNA_normalized_R.csv"),
 
 ## filter for significant miRNAs and targets
 ## formatting rowname as the gene name
-miRNAs_normalized <- normalized_miRNA_counts[(normalized_miRNA_counts[, 1] %in% sig_miRNAs[, 1]), ]
+miRNAs_normalized <- normalized_miRNA_counts[(normalized_miRNA_counts[, 1] %in% sig_miRNAs_new[, 1]), ]
 rownames(miRNAs_normalized) <- miRNAs_normalized[, 1]
 miRNAs_normalized <- miRNAs_normalized[, (-1)]
 
@@ -97,7 +94,7 @@ rownames(targets_normalized) <- targets_normalized[, 1]
 targets_normalized <- targets_normalized[, (-1)]
 
 ## testing out the Pearson correlation, Pearson is the default value when using cor()
-cor(as.numeric(miRNAs_normalized[1, ]), as.numeric(targets_normalized[8716, ]))
+cor(as.numeric(miRNAs_normalized[1, ]), as.numeric(targets_normalized[7286, ]))
 
 ## writing a function to calculate the pearson correlation for every target
 ## using normalized counts
@@ -117,11 +114,11 @@ colnames(correlations) <- c("miRNA", "target", "pearson correlation",
 ## all with positive correlation
 
 ## write the full correlation table to file for GRN
-write.table(correlations, file = paste0(input_dir, "correlations_full.tsv"),
+write.table(correlations, file = paste0(input_dir, "correlations_full_new.tsv"),
             quote = FALSE, sep = "\t")
 
 ## read in to skip a couple of steps
-correlations <- read.delim(paste0(input_dir, "correlations_full.tsv"), sep = "\t")
+correlations <- read.delim(paste0(input_dir, "correlations_full_new.tsv"), sep = "\t")
 
 correlations_filtered <- correlations[which(as.numeric(correlations[, 4]) < 0.05), ]
 
@@ -181,7 +178,7 @@ write.table(table(DE_target_genes$miRNA), file = paste0(input_dir, "Nr._correlat
             quote = FALSE, row.names = FALSE, sep = "\t")
 ```
 
-## make a target heatmap for the miRNA targets
+## make a target heatmap for the miRNA targets (Fig S3a)
 ```{r}
 ## DE_target_genes, get the counts for them
 DE_target_gene_counts <- RNA_counts_case_wise[(RNA_counts_case_wise[, 1] %in% DE_target_genes[, 2]), ]
@@ -217,10 +214,10 @@ heatmap_pal <- colorRamp2(c(-4, 0, 4), c("#3C5488B2", "white", "#E64B35B2"))
 miRNAs_anno <- unique(DE_target_genes[, 1])
 
 ## loop through the miRNAs
-miRNA_anno <- as.data.frame(matrix(data = "none", ncol = 20,
-                                   nrow = nrow(DE_target_gene_counts)))
+miRNA_anno <- as.data.frame(matrix(data = "none", ncol = 14,
+                                   nrow = nrow(DE_target_gene_counts_sorted_log)))
 colnames(miRNA_anno) <- miRNAs_anno
-rownames(miRNA_anno) <- DE_target_gene_counts[, 1]
+rownames(miRNA_anno) <- rownames(DE_target_gene_counts_sorted_log)
 for (i in seq_along(miRNAs_anno)) {
   miRNA <- miRNAs_anno[i]
   corr_targets <- DE_target_genes[which(DE_target_genes[, 1] == miRNA), ]
@@ -253,19 +250,13 @@ row_annotation <- rowAnnotation(
   target_of_199b_3p = anno_simple(miRNA_anno[, 5], col = annotation_colors),
   target_of_708_5p = anno_simple(miRNA_anno[, 6], col = annotation_colors),
   target_of_7b_3p = anno_simple(miRNA_anno[, 7], col = annotation_colors),
-  target_of_196b_5p = anno_simple(miRNA_anno[, 8], col = annotation_colors),
-  target_of_18a_5p = anno_simple(miRNA_anno[, 9], col = annotation_colors),
-  target_of_708_3p = anno_simple(miRNA_anno[, 10], col = annotation_colors),
-  target_of_130b_3p = anno_simple(miRNA_anno[, 11], col = annotation_colors),
-  target_of_4421 = anno_simple(miRNA_anno[, 12], col = annotation_colors),
-  target_of_210_3p = anno_simple(miRNA_anno[, 13], col = annotation_colors),
-  target_of_383_5p = anno_simple(miRNA_anno[, 14], col = annotation_colors),
-  target_of_4717_3p = anno_simple(miRNA_anno[, 15], col = annotation_colors),
-  target_of_187_3p = anno_simple(miRNA_anno[, 16], col = annotation_colors),
-  target_of_4746_5p = anno_simple(miRNA_anno[, 17], col = annotation_colors),
-  target_of_4741 = anno_simple(miRNA_anno[, 18], col = annotation_colors),
-  target_of_3121_3p = anno_simple(miRNA_anno[, 19], col = annotation_colors),
-  target_of_342_5p = anno_simple(miRNA_anno[, 20], col = annotation_colors),
+  target_of_4421 = anno_simple(miRNA_anno[, 8], col = annotation_colors),
+  target_of_210_3p = anno_simple(miRNA_anno[, 9], col = annotation_colors),
+  target_of_383_5p = anno_simple(miRNA_anno[, 10], col = annotation_colors),
+  target_of_4717_3p = anno_simple(miRNA_anno[, 11], col = annotation_colors),
+  target_of_187_3p = anno_simple(miRNA_anno[, 12], col = annotation_colors),
+  target_of_4746_5p = anno_simple(miRNA_anno[, 13], col = annotation_colors),
+  target_of_4741 = anno_simple(miRNA_anno[, 14], col = annotation_colors),
   LFC = anno_simple(DE_target_LFC_sorted[, 3], col = LFC_col)
 )
 
@@ -286,7 +277,7 @@ ordered_indices <- c(9, 1, 3, 5, 7, 11, 10, 2, 4, 6, 8, 12)
 DE_target_gene_counts_sorted_log_scaled <- DE_target_gene_counts_sorted_log_scaled[, ordered_indices]
 
 
-pdf(file = paste0(input_dir, "Heatmap_DE_miRNA_targets_log2_scaled_pearson.pdf"), width = 12, height = 10)
+pdf(file = paste0(input_dir, "Heatmap_DE_miRNA_targets_log2_scaled_pearson_new.pdf"), width = 12, height = 10)
 ht <- Heatmap(DE_target_gene_counts_sorted_log_scaled, top_annotation = ha,
         left_annotation = row_annotation,
         name = "z-score", clustering_distance_rows = "pearson",
@@ -297,11 +288,9 @@ draw(ht, annotation_legend_side = "right", annotation_legend_list = list(annotat
 dev.off()
 ```
 
-
 ## Visualising the predicted targets 
 make scatterplots to determine the influence of outliers
 possibly heatmaps (1 heatmap for each miRNA)
-
 Scatterplots to make: CCNA2, CRY2, NTRK2, CBX2, potentially WEE1
 ```{r}
 ## scatterplots, one colour for mRNA, one for miRNA
@@ -406,7 +395,6 @@ pdf(file = file_name)
   dev.off()
 }
 
-
 targets <- combined_correlation[which(combined_correlation[, 1] == "hsa-let-7b-3p"), ]
 expression <- as.data.frame(cbind(t(miRNAs_normalized["hsa-let-7b-3p", ]),
                                   t(target_expr_corr_filtered[targets[, 2], ])))
@@ -431,13 +419,11 @@ colnames(CNA_changes) <- sig_miRNAs[, 1]
 ## putting the miRNA counts in a separate heatmap does not work
 ## alternatively just take the counts as a separate annotation
 ## second heatmap annotation object to show if the case has a CNA
-## high priority miRNAs: hsa-let-7b-3p and hsa-miR-342-5p
+## high priority miRNAs: hsa-let-7b-3p
 ## extract targets + their expression (counts from all patients or general LFC?)
 let_7b_targets <- combined_correlation[which(combined_correlation[, 1] == "hsa-let-7b-3p"), ]
-miR_342_5p_targets <- combined_correlation[which(combined_correlation[, 1] == "hsa-miR-342-5p"), ]
 
 miR_130b_3p_targets <- combined_correlation[which(combined_correlation[, 1] == "hsa-miR-130b-3p"), ]
-miR_15b_5p_targets <- combined_correlation[which(combined_correlation[, 1] == "hsa-miR-15b-5p"), ]
 
 ## creating the annotations
 sample_names <- colnames(target_expr_corr_filtered)
@@ -465,29 +451,6 @@ for (i in 1:33) {
               just = c("right", "top"))
   dev.off()
 }
-
-## for miRNA-342 redo the heatmap to adjust font size of rownames
-targets <- combined_correlation[which(combined_correlation[, 1] == "hsa-miR-342-5p"), ]
-expression <- as.data.frame(rbind(miRNAs_normalized["hsa-miR-342-5p", ],
-                                  target_expr_corr_filtered[targets[, 2], ]))
-expression_log <- log2(expression + 1)
-colnames(expression_log) <- c("1a", "1b", "2a", "2b", "3a", "3b",
-                              "4a", "4b", "5a", "5b", "6a", "6b")
-col_fun <- colorRamp2(c(min(expression_log[1, ]), max(expression_log[1, ])), c("yellow", "darkgreen"))
-ha <- HeatmapAnnotation(miRNA_count = anno_simple(as.numeric(expression_log[1, ]), col = col_fun, pch = CNA_changes[, "hsa-miR-342-5p"]))
-# using anno_simple does not automatically generate legends
-# legend needs to be created manually
-filename <- paste0(input_dir, "hsa-miR-342-5p", "_Heatmap.pdf", sep = "")
-col_fun_2 <- colorRamp2(c(0, max(expression_log[2:dim(expression_log)[1], ])), c("blue", "red"))
-pdf(file = filename)
-  draw(Heatmap(expression_log[2:dim(expression_log)[1], ], name = "mRNA",
-               cluster_columns = FALSE, top_annotation = ha,
-               column_title = paste0("Log2 transformed target expression of ", "hsa-miR-342-5p"),
-               row_names_gp = grid::gpar(fontsize = 7)))
-  draw(Legend(col_fun = col_fun, title = "miRNA"),
-              x = unit(1, "npc"), y = unit(1, "npc"),
-              just = c("right", "top"))
-dev.off()
 
 ## excluding the positive correlating genes
 ## creating the annotations
@@ -521,13 +484,4 @@ for (i in 1:29){
   draw(Legend(col_fun = col_fun, title = "miRNA"), x = unit(1, "npc"), y = unit(1, "npc"), just = c("right", "top"))
   dev.off()
 }
-```
-
-## make a barplot to show the number of targets for each miRNA
-```{r}
-targets_per_miRNA <- read.table(paste0(input_dir, "Nr._correlating_DE_miRNAs_cohorts.tsv"),
-                                sep = "\t", header = TRUE)
-targets_per_miRNA <- targets_per_miRNA[order(targets_per_miRNA[, 2], decreasing = TRUE), ]
-
-targets_per_miRNA$Var1 <- factor(targets_per_miRNA$Var1, levels = targets_per_miRNA$Var1)
 ```
